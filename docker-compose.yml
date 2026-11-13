@@ -1,0 +1,19 @@
+services:
+  syllabus-auditor:
+    build: .
+    image: syllabus-auditor:1.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ./data:/var/lib/syllabus-auditor
+    environment:
+      SA_SECURE_COOKIES: "true"
+      SA_PUBLIC_BASE_URL: "https://syllabi.baileyfcross.info"
+      SA_MONITOR_INTERVAL_HOURS: "24"
+    mem_limit: 8g
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m

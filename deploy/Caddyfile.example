@@ -1,0 +1,11 @@
+# Install Caddy on the VM where Docker runs, point the DNS record to that VM,
+# then use this as the site's Caddyfile (adjust email/TLS settings as needed).
+syllabi.baileyfcross.info {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8765
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+}

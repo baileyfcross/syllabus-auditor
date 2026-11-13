@@ -1,0 +1,9 @@
+# Release status: Source package (not complete offline AI bundle)
+
+**Implemented:** local and hosted FastAPI application; private login/roles; multi-institution configuration; DOCX/PDF/TXT extraction and Tesseract OCR hooks; master templates with per-section heading/exact/semantic matching; policy versioning; catalog records by academic year; bounded official-site discovery and source refresh; manual approval of change proposals; AI candidate-selection adapter for local GGUF inference; batch auditing; audit viewer; accepted/dismissed findings; conservative DOCX corrections; PDF/DOCX/CSV and batch ZIP reports; revision/audit history; Docker and local launchers.
+
+**Verified in current environment:** Python compilation, JavaScript syntax, six FastAPI integration tests covering main application workflows. Test output: 6 passed. A live browser UI smoke test could not be completed because headless Chromium was blocked by environment administrative policy. Docker container build and cross-platform packaging were not run in this environment.
+
+**Not included in this ZIP:** the 1.28GB model GGUF weights, prebuilt `llama-cpp-python` binary wheels, the Python interpreter, or bundled Tesseract executable for native desktop. External binary download was unavailable. The app explicitly reports that embedded Qwen inference is unavailable; deterministic and fuzzy checks continue to work. For a true offline runtime package, execute `python tools/build_distribution.py --complete` on an internet-connected build machine with the target platform, which includes verified weights and dependencies. For container hosting, stage the GGUF and run `docker compose up --build -d`.
+
+**External verification limitations:** actual college catalogs/policy websites have not been integration tested against this application's crawler. Live references must be configured and verified institution by institution. The software does not contact external AI endpoints or Ollama.
