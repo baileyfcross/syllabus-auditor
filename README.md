@@ -51,7 +51,7 @@ docker compose up --build -d
 docker compose logs -f syllabus-auditor  # first-run setup token
 ```
 
-The backend listens on the loopback interface at port 8765. Route `syllabi.baileyfcross.info` through an HTTPS reverse proxy (e.g., Caddy/Nginx/Cloudflare Tunnel) to `http://127.0.0.1:8765` and set `SA_SECURE_COOKIES=true` (already set in Compose). Do not forward port 8765 directly to the internet. The app is **not** a static site and needs a container/VM alongside any static frontend hosting. The `data` directory must remain persistent for database, documents, first-run token, source histories, and backups. Back it up securely.
+The backend listens on the loopback interface at port 8765. Route `syllabi.yourdomain.com` through an HTTPS reverse proxy (e.g., Caddy/Nginx/Cloudflare Tunnel) to `http://127.0.0.1:8765` and set `SA_SECURE_COOKIES=true` (already set in Compose). Do not forward port 8765 directly to the internet. The app is **not** a static site and needs a container/VM alongside any static frontend hosting. The `data` directory must remain persistent for database, documents, first-run token, source histories, and backups. Back it up securely.
 
 `docker-compose.yml` includes a Linux read-only app image and a writable data bind mount. Some hosts may require `chmod 777 data` *for diagnosis only*; prefer a restricted ownership mapping to UID 10001 in production (e.g. `sudo chown -R 10001:10001 data && chmod 700 data`). The container's port is bound only to localhost by default. It uses a single Uvicorn worker to keep the in-process job queue coordinated.
 
