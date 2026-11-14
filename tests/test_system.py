@@ -974,3 +974,315 @@ def test_delete_all_courses_double_confirmation_count_and_institution_scope(clie
     assert client.get('/api/courses',params={'institution_id':inst}).json()==[]
     assert len(client.get('/api/courses',params={'institution_id':second}).json())==1
     assert client.get('/api/audits',params={'institution_id':inst}).status_code==200
+
+
+def test_default_template_create_manage_and_select_implicitly(client,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    # Prior tests deliberately exercise lifespan shutdown. Use a fresh test worker.
+    worker=ThreadPoolExecutor(max_workers=2)
+    monkeypatch.setattr(main,'executor',worker)
+    inst=client.get('/api/institutions').json()[0]['id']
+    a=client.post('/api/templates/upload',data={'institution_id':inst,'name':'Default Main','is_default':'true'},
+         files={'file':('default.docx',make_doc(['All courses must include a schedule.']),'application/vnd.openxmlformats-officedocument.wordprocessingml.document')})
+    assert a.status_code==200,a.text
+    aid=a.json()['id']
+    assert one('SELECT is_default FROM templates WHERE id=?',(aid,))['is_default']==1
+    b=client.post('/api/templates/upload',data={'institution_id':inst,'name':'Default Later','is_default':'true'},
+         files={'file':('later.docx',make_doc(['Learning outcomes.']),'application/vnd.openxmlformats-officedocument.wordprocessingml.document')})
+    assert b.status_code==200,b.text
+    bid=b.json()['id']
+    assert one('SELECT is_default FROM templates WHERE id=?',(aid,))['is_default']==0
+    assert one('SELECT is_default FROM templates WHERE id=?',(bid,))['is_default']==1
+    assert client.put(f'/api/templates/{aid}',json={'is_default':True}).status_code==200
+    assert one('SELECT is_default FROM templates WHERE id=?',(bid,))['is_default']==0
+    assert client.put(f'/api/templates/{aid}',json={'active':False,'is_default':True}).status_code==400
+    assert one('SELECT is_default FROM templates WHERE id=?',(aid,))['is_default']==1
+    assert client.put(f'/api/templates/{bid}',json={'active':False}).status_code==200
+    assert client.put(f'/api/templates/{aid}',json={'is_default':False}).status_code==200
+    assert one('SELECT COUNT(*) n FROM templates WHERE institution_id=? AND is_default=1',(inst,))['n']==0
+    assert client.put(f'/api/templates/{aid}',json={'is_default':True}).status_code==200
+    # Omitted template applies the default; explicit 0 preserves the opt-out.
+    doc=make_doc(['Some instructor content.'])
+    new=client.post('/api/audits/upload',data={'institution_id':inst,'academic_year':'2026-2027'},
+        files=[('files',('uses-default.docx',doc,'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))])
+    assert new.status_code==200,new.text
+    assert one('SELECT template_id FROM audits WHERE id=?',(new.json()['audit_ids'][0],))['template_id']==aid
+    none=client.post('/api/audits/upload',data={'institution_id':inst,'template_id':'0','academic_year':'2026-2027'},
+        files=[('files',('no-default.docx',doc,'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))])
+    assert none.status_code==200,none.text
+    assert one('SELECT template_id FROM audits WHERE id=?',(none.json()['audit_ids'][0],))['template_id'] is None
+    _wait_for_job(client,new.json()['job_id'])
+    _wait_for_job(client,none.json()['job_id'])
+    assert client.delete(f'/api/templates/{aid}').status_code==200
+    worker.shutdown(wait=True)
+
+
+def _review_fixture(client,filetype='.docx'):
+    from app.config import UPLOAD_DIR
+    inst=client.get('/api/institutions').json()[0]['id']
+    file_name='approval-review'+filetype
+    src=UPLOAD_DIR/(secrets.token_hex(12)+filetype)
+    if filetype=='.docx':
+        src.write_bytes(make_doc(['Original title is incorrect.', 'Student policies need a review.']))
+    elif filetype=='.pdf':
+        import fitz
+        with fitz.open() as pdf:
+            page=pdf.new_page();page.insert_text((50,90),'Review syllabus')
+            src.write_bytes(pdf.tobytes())
+    else:src.write_text('Review syllabus with documented policies.',encoding='utf-8')
+    audit_id=execute('''INSERT INTO audits(institution_id,filename,storage_path,filetype,created_at,created_by,status,extraction_text)
+                         VALUES(?,?,?,?,?,?,?,?)''',(inst,file_name,str(src),filetype,'2026-11-13',1,'complete','Sample syllabus'))
+    ids=[]
+    for code,title,status,observed,expected in [
+        ('title','Course title','failed','Original title is incorrect.','Official replacement title.'),
+        ('policy','Policy text','review','Student policies need a review.','The current policy is here.'),
+        ('extra','Additional notice','passed','Already correct','Already correct')]:
+        ids.append(execute('''INSERT INTO findings(audit_id,code,title,category,status,observed,expected)
+                    VALUES(?,?,?,?,?,?,?)''',(audit_id,code,title,'policy',status,observed,expected)))
+    return audit_id,src,ids
+
+
+def test_review_progress_approve_download_and_lock(client):
+    audit,source,ids=_review_fixture(client)
+    detail=client.get(f'/api/audits/{audit}').json()
+    assert detail['review_summary']['remaining']==2
+    assert client.post(f'/api/audits/{audit}/approve').status_code==409
+    x=client.put(f'/api/findings/{ids[0]}',json={'accepted':True,'dismissed':False})
+    assert x.status_code==200,x.text
+    assert x.json()['review_summary']['remaining']==1
+    assert x.json()['review_summary']['pending_failed']==0
+    assert client.put(f'/api/findings/{ids[1]}',json={'accepted':True,'dismissed':True}).status_code==400
+    assert client.put(f'/api/findings/{ids[2]}',json={'dismissed':True}).status_code==409
+    assert client.put(f'/api/findings/{ids[1]}',json={'dismissed':True,'accepted':False}).status_code==200
+    detail=client.get(f'/api/audits/{audit}').json()
+    assert detail['review_summary']['remaining']==0
+    assert detail['review_summary']['reviewed']==2
+    response=client.post(f'/api/audits/{audit}/approve')
+    assert response.status_code==200,response.text
+    assert response.json()['approved_at']
+    approved=client.get(f'/api/audits/{audit}/approved')
+    assert approved.status_code==200
+    assert approved.content.startswith(b'PK')
+    approved_doc=Document(io.BytesIO(approved.content))
+    whole='\n'.join(p.text for p in approved_doc.paragraphs)
+    assert 'Official replacement title.' in whole
+    assert 'Approval Record' in whole
+    assert 'Policy text' in whole and 'DISMISSED / WAIVED' in whole
+    assert 'Original title is incorrect.' not in whole.split('Approval Record')[0]
+    original=Document(source)
+    assert 'Original title is incorrect.' in '\n'.join(p.text for p in original.paragraphs)
+    assert client.put(f'/api/findings/{ids[1]}',json={'dismissed':False}).status_code==409
+    assert client.post(f'/api/audits/{audit}/approve').status_code==409
+    rows=client.get('/api/audits').json()
+    assert next(row for row in rows if row['id']==audit)['approved_at']
+    artifact=Path(one('SELECT approved_path FROM audits WHERE id=?',(audit,))['approved_path'])
+    assert artifact.is_file()
+    delete=client.delete(f'/api/audits/{audit}')
+    assert delete.status_code==200,delete.text
+    assert not artifact.exists() and not source.exists()
+
+
+def test_approved_pdf_with_documented_amendment_and_txt(client):
+    for kind in ('.pdf','.txt'):
+        audit,source,ids=_review_fixture(client,kind)
+        assert client.get(f'/api/audits/{audit}/approved').status_code==409
+        assert client.put(f'/api/findings/{ids[0]}',json={'accepted':True}).status_code==200
+        assert client.put(f'/api/findings/{ids[1]}',json={'dismissed':True}).status_code==200
+        assert client.post(f'/api/audits/{audit}/approve').status_code==200
+        content=client.get(f'/api/audits/{audit}/approved').content
+        assert content.startswith(b'%PDF' if kind=='.pdf' else b'Review syllabus')
+        if kind=='.pdf':
+            import fitz
+            with fitz.open(stream=content,filetype='pdf') as pdf:
+                assert len(pdf)>=2
+                assert 'Official replacement title.' in '\n'.join(page.get_text() for page in pdf)
+        else:
+            assert b'Official replacement title.' in content
+        assert client.delete(f'/api/audits/{audit}').status_code==200
+
+
+def test_other_user_cannot_change_or_approve_saved_audit(client):
+    audit,source,ids=_review_fixture(client)
+    with TestClient(main.app) as other:
+        result=other.post('/api/login',json={'username':'other_reviewer','password':'very-secure-test-password'})
+        assert result.status_code==200
+        other.headers['X-CSRF-Token']=result.json()['csrf']
+        assert other.put(f'/api/findings/{ids[0]}',json={'accepted':True}).status_code==403
+        assert other.post(f'/api/audits/{audit}/approve').status_code==403
+    assert client.delete(f'/api/audits/{audit}').status_code==200
+
+
+def test_approval_and_default_migrate_old_schema(tmp_path,monkeypatch):
+    import sqlite3
+    from app import database as dbm
+    old_schema=dbm.SCHEMA.replace(' is_default INTEGER NOT NULL DEFAULT 0,','')
+    old_schema=old_schema.replace(',\n approved_at TEXT DEFAULT \'\', approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,\n approved_path TEXT DEFAULT \'\', approval_snapshot TEXT DEFAULT \'\'','')
+    old_schema=old_schema.replace(',\n reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL, reviewed_at TEXT DEFAULT \'\'','')
+    filename=tmp_path/'old.sqlite3'
+    with sqlite3.connect(filename) as db:
+        db.executescript(old_schema)
+        db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES(1,'admin','hash','admin','2026-01-01')")
+        db.execute("INSERT INTO institutions(id,name,created_at) VALUES(1,'College','2026-01-01')")
+        db.execute("INSERT INTO templates(id,institution_id,name,created_at) VALUES(1,1,'Old template','2026-01-01')")
+        db.execute("INSERT INTO audits(id,institution_id,filename,storage_path,filetype,status,created_at,created_by) VALUES(1,1,'old.docx','old.docx','.docx','complete','2026-01-01',1)")
+        db.execute("INSERT INTO findings(id,audit_id,title,category,status) VALUES(1,1,'Old rule','policy','review')")
+    monkeypatch.setattr(dbm,'DB_PATH',filename)
+    dbm.initialize()
+    with sqlite3.connect(filename) as db:
+        assert 'is_default' in {r[1] for r in db.execute('PRAGMA table_info(templates)')}
+        assert 'approved_path' in {r[1] for r in db.execute('PRAGMA table_info(audits)')}
+        assert 'reviewed_at' in {r[1] for r in db.execute('PRAGMA table_info(findings)')}
+        assert db.execute('SELECT filename FROM audits WHERE id=1').fetchone()[0]=='old.docx'
+        assert db.execute('SELECT title FROM findings WHERE id=1').fetchone()[0]=='Old rule'
+
+
+def test_template_alternative_section_headings(client):
+    """Approved heading aliases are accepted without substituting body wording."""
+    from app.validation import audit_document
+    from app.database import one
+    institution=client.get('/api/institutions').json()[0]['id']
+    response=client.post('/api/templates/upload',data={
+        'institution_id':institution,'name':'Alternate heading test',
+        'academic_year':'2026-2027'
+    },files={'file':('template.docx',make_doc(['Course materials required.'],heading='REQUIRED TEXT/MATERIALS'),
+                       'application/vnd.openxmlformats-officedocument.wordprocessingml.document')})
+    assert response.status_code==200,response.text
+    tid=response.json()['id']
+    template=one('SELECT * FROM templates WHERE id=?',(tid,))
+    import json
+    sections=json.loads(template['sections_json'])
+    assert any('REQUIRED TEXT/MATERIALS' in x['heading'] for x in sections)
+    for section in sections:
+        if section['heading']=='REQUIRED TEXT/MATERIALS':
+            section['alternative_headings']=['Course Materials & Support','Reading and Resources']
+            section['required']=True
+            section['mode']='heading'
+        else:section['required']=False
+    updated=client.put(f'/api/templates/{tid}',json={'sections_json':sections})
+    assert updated.status_code==200,updated.text
+    template=one('SELECT * FROM templates WHERE id=?',(tid,))
+    stored=json.loads(template['sections_json'])
+    assert stored[1]['alternative_headings']==['Course Materials & Support','Reading and Resources']
+
+    parsed={'text':'CSC-220\nCourse Materials and Support\nOnline learning materials provided.',
+      'blocks':[{'text':'CSC-220','location':'Paragraph 1','kind':'heading'},
+                {'text':'Course Materials and Support','location':'Paragraph 2','kind':'heading'},
+                {'text':'Online learning materials provided.','location':'Paragraph 3','kind':'paragraph'}]}
+    _,findings=audit_document(parsed,[],template=template,use_ai=False)
+    f=next(x for x in findings if x['code'].startswith('template_'))
+    assert f['status']=='passed',f
+    assert f['location']=='Paragraph 2',f
+    assert 'alternative' in f['explanation']
+    assert f['observed'].startswith('Course Materials and Support')
+
+    # Without an approved alias, this unrelated heading must not automatically pass.
+    stored[1]['alternative_headings']=[]
+    _,without_alias=audit_document(parsed,[],template={**template,'sections_json':json.dumps(stored)},use_ai=False)
+    f2=next(x for x in without_alias if x['code'].startswith('template_'))
+    assert f2['status']!='passed',f2
+
+    # Heading aliases guide location only: they must not bypass exact text checks.
+    stored[1]['alternative_headings']=['Course Materials & Support']
+    stored[1]['mode']='exact'
+    stored[1]['expected_text']='Every student must buy the required textbook.'
+    _,exact=audit_document(parsed,[],template={**template,'sections_json':json.dumps(stored)},use_ai=False)
+    f3=next(x for x in exact if x['code'].startswith('template_'))
+    assert f3['status']!='passed',f3
+
+
+def test_template_alias_validation_limits(client):
+    import json
+    institution=client.get('/api/institutions').json()[0]['id']
+    template=client.get('/api/templates',params={'institution_id':institution}).json()[0]
+    sections=json.loads(template['sections_json'])
+    sections[0]['alternative_headings']=['valid alternate',3]
+    invalid=client.put(f'/api/templates/{template["id"]}',json={'sections_json':sections})
+    assert invalid.status_code==400,invalid.text
+    sections[0]['alternative_headings']=['a'*181]
+    assert client.put(f'/api/templates/{template["id"]}',json={'sections_json':sections}).status_code==400
+    sections[0]['alternative_headings']=['Title\nMalicious']
+    assert client.put(f'/api/templates/{template["id"]}',json={'sections_json':sections}).status_code==400
+
+
+def test_syllabus_series_reruns_appear_as_one_record_with_history(client,monkeypatch):
+    """The stable syllabus record keeps every check without inflating the totals."""
+    import csv,io as _io
+    from concurrent.futures import ThreadPoolExecutor
+    new_executor=ThreadPoolExecutor(max_workers=2)
+    monkeypatch.setattr(main,'executor',new_executor)
+    inst=client.get('/api/institutions').json()[0]['id']
+    source=make_doc(['An example syllabus to verify each rerun keeps its own findings.'])
+    baseline=client.get('/api/overview').json()['audits']
+    uploaded=client.post('/api/audits/upload',data={'institution_id':inst,'academic_year':'2026-2027','template_id':0},
+      files=[('files',('series-regression.docx',source,'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))])
+    assert uploaded.status_code==200,uploaded.text
+    original=uploaded.json()['audit_ids'][0]
+    _wait_for_job(client,uploaded.json()['job_id'])
+    assert client.get('/api/overview').json()['audits']==baseline+1
+    first=client.get(f'/api/audits/{original}').json()
+    assert first['audit']['series_id']==original
+    assert len(client.get(f'/api/audits/{original}/history').json()['revisions'])==1
+    rerun=client.post(f'/api/audits/{original}/rerun')
+    assert rerun.status_code==200,rerun.text
+    second_id=rerun.json()['audit_id']
+    assert rerun.json()['series_id']==original
+    _wait_for_job(client,rerun.json()['job_id'])
+    # Rerunning an older revision must still create the next check from the latest revision.
+    repeat=client.post(f'/api/audits/{original}/rerun')
+    assert repeat.status_code==200,repeat.text
+    third_id=repeat.json()['audit_id']
+    _wait_for_job(client,repeat.json()['job_id'])
+    latest=client.get(f'/api/audit-series/{original}').json()
+    assert latest=={'series_id':original,'audit_id':third_id}
+    history=client.get(f'/api/audits/{original}/history').json()
+    assert [r['id'] for r in history['revisions']]==[third_id,second_id,original]
+    assert [r['revision_number'] for r in history['revisions']]==[3,2,1]
+    assert history['current_audit_id']==third_id
+    assert client.get(f'/api/audits/{original}').json()['findings']==first['findings']
+    assert client.get(f'/api/audits/{original}/report.pdf').status_code==200
+    current=client.get('/api/audits').json()
+    matching=[r for r in current if r.get('series_id')==original]
+    assert len(matching)==1
+    assert matching[0]['id']==third_id and matching[0]['revision_count']==3
+    assert client.get('/api/overview').json()['audits']==baseline+1
+    assert len([a for a in client.get('/api/overview').json()['recent'] if a['series_id']==original])==1
+    assert client.get(f'/api/audits/{original}/compare').status_code==200
+    assert client.get(f'/api/audits/{third_id}/compare').json()['previous_audit_id']==second_id
+    rows=list(csv.DictReader(_io.StringIO(client.get('/api/audits/export.csv').content.decode('utf-8-sig'))))
+    assert sum(r['Document']=='series-regression.docx' for r in rows)==1
+    assert client.put(f'/api/findings/{first["findings"][0]["id"]}',json={'dismissed':True}).status_code==409
+    initial_jobs=client.get('/api/jobs').json()
+    assert all(j['id'] not in (rerun.json()['job_id'],repeat.json()['job_id']) for j in initial_jobs)
+    # Deleting the top-level syllabus removes its entire history and all stored copies.
+    removed=client.delete(f'/api/audit-series/{original}')
+    assert removed.status_code==200,removed.text
+    assert removed.json()['revisions_deleted']==3
+    assert client.get(f'/api/audit-series/{original}').status_code==404
+    assert client.get(f'/api/audits/{original}/history').status_code==404
+    assert all(r.get('series_id')!=original for r in client.get('/api/audits').json())
+    assert client.get('/api/overview').json()['audits']==baseline
+    new_executor.shutdown(wait=True)
+
+
+def test_syllabus_series_migration_backfills_existing_rerun_chains(tmp_path,monkeypatch):
+    """Upgrades old reports with no series_id without changing their IDs/findings."""
+    from app import database as database
+    monkeypatch.setattr(database,'DB_PATH',tmp_path/'migrated.db')
+    database.initialize()
+    # Simulate upgrading a database created before the series_id migration.
+    with database.transaction() as db:
+        db.execute('DROP INDEX idx_audits_series')
+        db.execute('ALTER TABLE audits DROP COLUMN series_id')
+    with database.transaction() as db:
+        db.execute("INSERT INTO users(id,username,password_hash,created_at) VALUES(1,'test','pw','2026-11-13')")
+        db.execute("INSERT INTO institutions(id,name,created_at) VALUES(1,'College','2026-11-13')")
+        for ident,parent in [(100,None),(101,100),(102,101),(103,None)]:
+            db.execute('''INSERT INTO audits(id,rerun_of_id,institution_id,filename,storage_path,filetype,created_at,created_by,status)
+                          VALUES(?,?,?,?,?,?,?,?,?)''',(ident,parent,1,'example.docx',f'/tmp/test-{ident}.docx','.docx','2026-11-13',1,'complete'))
+        db.execute("INSERT INTO findings(audit_id,code,title,category,status) VALUES(101,'x','Issue','policy','failed')")
+    database.initialize()
+    rows=database.all_rows('SELECT id,series_id FROM audits ORDER BY id')
+    assert [(r['id'],r['series_id']) for r in rows]==[(100,100),(101,100),(102,100),(103,103)]
+    assert database.one('SELECT COUNT(*) n FROM findings WHERE audit_id=101')['n']==1
+    database.initialize()
+    assert database.one('SELECT series_id FROM audits WHERE id=102')['series_id']==100

@@ -1,0 +1,25 @@
+'use strict';
+const fs=require('node:fs');
+const vm=require('node:vm');
+const assert=require('node:assert/strict');
+const js=fs.readFileSync('app/static/app.js','utf8');
+const start=js.indexOf('function nextUnreviewedFinding(');
+const end=js.indexOf('function focusLocation(',start);
+assert(start>=0&&end>start);
+const ctx={};vm.createContext(ctx);vm.runInContext(js.slice(start,end),ctx);
+const select=(all,id)=>vm.runInContext(`nextUnreviewedFinding(${JSON.stringify(all)},${JSON.stringify(id)})`,ctx);
+let findings=[{id:1,status:'passed'},{id:2,status:'warning',accepted:1},{id:3,status:'failed',accepted:0,dismissed:0},{id:4,status:'review',accepted:0,dismissed:0},{id:5,status:'failed',dismissed:1}];
+assert.equal(select(findings,2)?.id,3);
+assert.equal(select(findings,3)?.id,4);
+assert.equal(select(findings,4)?.id,3); // cycle
+assert.equal(select(findings,0)?.id,3);
+findings[2].accepted=1;
+assert.equal(select(findings,3)?.id,4);
+findings[3].dismissed=1;
+assert.equal(select(findings,4),null);
+assert.match(js,/data-act="next-unreviewed"|aButton\(icon\('right'\)\+' Next unreviewed','next-unreviewed'/);
+assert.match(js,/selectedButton\?\.scrollIntoView/);
+assert.match(js,/focusLocation\(next\.location\)/);
+assert.match(js,/data-section-aliases/);
+assert.match(js,/alternative_headings/);
+console.log('PASS next unreviewed selection, wraparound, disabled behavior, aliases UI');

@@ -70,9 +70,42 @@ def _finding(code,title,category,status,severity,expected='',observed='',locatio
         'expected':expected,'observed':observed,'location':location,'explanation':reason,'source_url':url,
         'confidence':round(confidence,2),'evidence_json':json.dumps(evidence or {}),'requirement_id':requirement_id}
 
-def _check_text(name,expected,mode,blocks,severity,category,req_id=None,variants=None,keywords='',source_url='',use_ai=True):
+def _section_heading_alias(blocks, alternative_headings):
+    """Find an approved alternate section *heading* without matching a body mention.
+
+    DOCX headings are marked explicitly; plain text and PDFs do not preserve
+    styles, so permit short standalone heading-like lines in those formats.
+    An alias is navigation evidence, never a substitute for exact body text.
+    """
+    approved=[]
+    for alias in alternative_headings or []:
+        if not isinstance(alias,str): continue
+        normalized=letters(alias.replace('&',' and '))
+        if normalized: approved.append(normalized)
+    if not approved:return None
+    found=[]
+    for i,block in enumerate(blocks):
+        original=str(block.get('text') or '').strip()
+        first=original.splitlines()[0].strip() if original else ''
+        if not first or len(first)>110 or len(first.split())>15 or first.endswith(('.', '!', '?')):continue
+        value=letters(first.replace('&',' and '))
+        if not value:continue
+        score=max((fuzz.ratio(value,a)/100 for a in approved),default=0)
+        if score<.90:continue
+        # Prefer exact alias headings and explicitly styled document headings.
+        if score<.99 and block.get('kind') not in ('heading','paragraph'):
+            continue
+        joined=original
+        if len(original)<125:
+            joined+='\n'+'\n'.join(x.get('text','') for x in blocks[i+1:i+5])
+        found.append({'text':joined[:3500],'location':block.get('location',''),
+                      'score':score,'index':i,'alias_match':True})
+    return max(found,key=lambda item:(item['score'], -item['index']),default=None)
+
+def _check_text(name,expected,mode,blocks,severity,category,req_id=None,variants=None,keywords='',source_url='',use_ai=True,heading_aliases=None):
     variants=variants or []
-    found=locate_content(blocks,name,expected,keywords,mode,category,use_ai=use_ai)
+    alias_found=_section_heading_alias(blocks,heading_aliases)
+    found=alias_found or locate_content(blocks,name,expected,keywords,mode,category,use_ai=use_ai)
     loc=found['location'] if found else ''
     observed=found['text'] if found else ''
     confidence=found.get('ai_confidence',found['score']) if found else 0
@@ -80,9 +113,9 @@ def _check_text(name,expected,mode,blocks,severity,category,req_id=None,variants
         return _finding(name,name,category,'review',severity,expected,observed,loc,'The required reference text has not been configured.',source_url,confidence,requirement_id=req_id)
     if mode=='heading':
         head=found and max((similarity(line,name) for line in observed.split('\n')[:2]),default=0)
-        passed=bool(found and (found['score']>=.82 or head>=.82))
+        passed=bool(found and (found.get('alias_match') or found['score']>=.82 or head>=.82))
         return _finding(name,name,category,'passed' if passed else 'failed',severity,expected,observed,loc,
-            'Recognized section heading.' if passed else 'Required template heading not found.',source_url,confidence,requirement_id=req_id)
+            ('Recognized an approved alternative section heading.' if alias_found else 'Recognized section heading.') if passed else 'Required template heading not found.',source_url,confidence,requirement_id=req_id)
     if mode=='present':
         found_ok=bool(found and found['score']>=.8)
         return _finding(name,name,category,'passed' if found_ok else 'failed',severity,expected,observed,loc,
@@ -244,7 +277,8 @@ def audit_document(extracted,requirements,course=None,template=None,use_ai=True)
             if mode not in ('exact','semantic','heading','present'):mode='heading'
             expected=section.get('expected_text','') if mode in ('exact','semantic') else ''
             match=_check_text(section['heading'],expected,mode,blocks,'warning','template',
-                              keywords=section['heading'],use_ai=use_ai)
+                              keywords=section['heading'],use_ai=use_ai,
+                              heading_aliases=section.get('alternative_headings',[]))
             match['code']='template_'+section['heading'].lower().replace(' ','_')[:70]
             findings.append(match)
     return code,findings

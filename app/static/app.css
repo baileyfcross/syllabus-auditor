@@ -14,3 +14,174 @@
 .catalog-filters > button {margin:23px 0 0;align-self:start;white-space:nowrap;min-height:41px;}
 @media(max-width:850px){.catalog-filters {grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.catalog-filters > button {margin-top:0;min-height:37px;}}
 @media(max-width:520px){.catalog-filters {grid-template-columns:minmax(0,1fr)}.catalog-filters > button {margin-top:0;}}
+
+/* Review decisions and approved copies */
+.pill.approved,.pill.accepted,.pill.default{background:#dcf5e8;color:#167450}.pill.dismissed{background:#f4eee2;color:#806138}.review-progress .progress{margin-top:9px}.btn[disabled]{opacity:.5;cursor:not-allowed;pointer-events:none}
+
+/* Consistent action roles: page toolbar, table row, and modal actions.
+   Accent and danger styling remain separate from sizing. */
+.page-actions { gap: 10px; align-items: center; }
+.page-actions .btn { min-height: 40px; height: 40px; padding: 0 15px; font-size: 13px; line-height: 1.2; white-space: nowrap; }
+.table-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.table-actions .btn { min-height: 33px; height: 33px; padding: 0 12px; font-size: 12px; line-height: 1.2; white-space: nowrap; }
+.table-actions .btn .icon { width: 15px; height: 15px; }
+/* Single-row actions on other pages follow the same compact standard. */
+.table-scroll td > .btn { min-height: 33px; height: 33px; padding: 0 12px; font-size: 12px; }
+.btn { transition: background-color .15s ease, border-color .15s ease, color .15s ease; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid #5795df; outline-offset: 2px;
+}
+.appearance-control { max-width: 310px; margin-top: 17px; }
+.appearance-settings .split-header { align-items: flex-start; }
+@media(max-width:680px){
+ .page-actions { width:100%; }
+ .page-actions .btn { white-space:normal; height:auto; min-height:40px; }
+ .table-actions { gap:7px; }
+}
+
+/* Dark mode: low-glare navy surfaces and accessible contrast.
+   System preference is reflected in data-theme by theme.js. */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  color: #e7edf8;
+  background: #101724;
+}
+[data-theme="dark"] body { color:#e7edf8; background:#101724; }
+[data-theme="dark"] .sidebar { background:#0d1523; color:#e8eef8; }
+[data-theme="dark"] .side-footer { border-color:#33435a; }
+[data-theme="dark"] .side-footer button { color:#d5e3fb; border-color:#405370; }
+[data-theme="dark"] .side-section { color:#9aabc6; }
+[data-theme="dark"] .nav-item { color:#c0cee3; }
+[data-theme="dark"] .nav-item:hover { background:#233750; }
+[data-theme="dark"] .nav-item.active { background:#28496b; box-shadow:inset 3px 0 #86b4f1; }
+[data-theme="dark"] .brand-mark { background:#2c4c77; border-color:#5679a5; }
+[data-theme="dark"] .topbar { background:#141f30; border-color:#2c3c52; }
+[data-theme="dark"] .topbar .breadcrumbs { color:#a0b6d4; }
+[data-theme="dark"] .workspace,
+[data-theme="dark"] .content { background:#101724; }
+[data-theme="dark"] .panel,
+[data-theme="dark"] dialog,
+[data-theme="dark"] .auth-card { background:#1a2638; border-color:#31435e; color:#e7edf8; box-shadow:0 2px 12px #050a1299; }
+[data-theme="dark"] .panel-head { border-color:#32435b; }
+[data-theme="dark"] .panel-head h2,
+[data-theme="dark"] .modal-title h2,
+[data-theme="dark"] h1,
+[data-theme="dark"] h2,
+[data-theme="dark"] h3 { color:#ecf3fe; }
+[data-theme="dark"] .filename { color:#b9d5f7; }
+[data-theme="dark"] .page-intro p,
+[data-theme="dark"] .muted,
+[data-theme="dark"] small,
+[data-theme="dark"] .field .hint,
+[data-theme="dark"] .stat-label,
+[data-theme="dark"] .stat-note,
+[data-theme="dark"] .stat-number + .stat-note,
+[data-theme="dark"] .issue-button .meta,
+[data-theme="dark"] .docblock small,
+[data-theme="dark"] .auth-card p,
+[data-theme="dark"] .auth-caption { color:#a9bad1; }
+[data-theme="dark"] .stat-number { color:#d7e7ff; }
+[data-theme="dark"] .stat-icon,
+[data-theme="dark"] .intro-card .badge-icon,
+[data-theme="dark"] .dropzone .big-icon { background:#273e5e; color:#9dc9ff; }
+[data-theme="dark"] .btn:not(.primary):not(.dark):not(.ghost) { background:#223148; border-color:#465c7a; color:#dfebfb; }
+[data-theme="dark"] .btn:not(.primary):not(.dark):not(.ghost):hover { background:#304763; border-color:#6684a9; }
+[data-theme="dark"] .btn.primary { background:#3672bd; border-color:#3672bd; color:white; }
+[data-theme="dark"] .btn.primary:hover { background:#4583d0; }
+[data-theme="dark"] .btn.danger:not(.primary) { color:#ffc0cb; border-color:#925065; background:#3b2434; }
+[data-theme="dark"] .btn.danger:not(.primary):hover { background:#513042; }
+[data-theme="dark"] .btn.dark { background:#2a405d; border-color:#456184; color:#fff; }
+[data-theme="dark"] .btn.ghost { background:transparent; color:#c9d8ee; }
+[data-theme="dark"] .btn.ghost:hover { background:#2a3a50; }
+[data-theme="dark"] a,
+[data-theme="dark"] .switch-link { color:#94c4ff; }
+[data-theme="dark"] a:hover { color:#c3deff; }
+[data-theme="dark"] .field label { color:#c8d8ed; }
+[data-theme="dark"] .field input,
+[data-theme="dark"] .field select,
+[data-theme="dark"] .field textarea,
+[data-theme="dark"] select,
+[data-theme="dark"] .select-inst { background:#111b2a; border-color:#465a76; color:#e6f0ff; }
+[data-theme="dark"] input::placeholder,
+[data-theme="dark"] textarea::placeholder { color:#8f9eb4; }
+[data-theme="dark"] th { color:#b5c5de; background:#233047; }
+[data-theme="dark"] td { border-color:#35435a; }
+[data-theme="dark"] tbody tr:hover { background:#223249; }
+[data-theme="dark"] .pill { background:#344156; color:#dbe5f2; }
+[data-theme="dark"] .pill.passed,
+[data-theme="dark"] .pill.verified,
+[data-theme="dark"] .pill.complete,
+[data-theme="dark"] .pill.ready,
+[data-theme="dark"] .pill.approved,
+[data-theme="dark"] .pill.accepted,
+[data-theme="dark"] .pill.default { background:#184b3c; color:#a1f0cc; }
+[data-theme="dark"] .pill.warning,
+[data-theme="dark"] .pill.changed,
+[data-theme="dark"] .pill.complete_with_errors,
+[data-theme="dark"] .pill.dismissed { background:#55421c; color:#ffe2a0; }
+[data-theme="dark"] .pill.failed,
+[data-theme="dark"] .pill.error,
+[data-theme="dark"] .pill.unavailable { background:#542b38; color:#ffc4d0; }
+[data-theme="dark"] .pill.review,
+[data-theme="dark"] .pill.needs_review,
+[data-theme="dark"] .pill.interrupted,
+[data-theme="dark"] .pill.queued,
+[data-theme="dark"] .pill.running { background:#253c61; color:#bad9ff; }
+[data-theme="dark"] .status-banner,
+[data-theme="dark"] .callout { background:#1e3550; border-color:#365779; color:#dceaff; }
+[data-theme="dark"] .status-banner.warn { background:#43391e; border-color:#7d693b; color:#ffe2a0; }
+[data-theme="dark"] .dropzone { background:#182a40; border-color:#456d96; }
+[data-theme="dark"] .dropzone:hover,
+[data-theme="dark"] .dropzone.hover { background:#213e60; border-color:#6aa5e6; }
+[data-theme="dark"] .dropzone p { color:#aec0d8; }
+[data-theme="dark"] .file-pill,
+[data-theme="dark"] .checkbox-row { background:#1b2b40; border-color:#3c5270; color:#e4edf9; }
+[data-theme="dark"] .file-list { color:#e5eefa; }
+[data-theme="dark"] .quote { background:#142135; border-color:#334e70; color:#e9f2ff; }
+[data-theme="dark"] .quote-label { color:#b2c6e0; }
+[data-theme="dark"] .docviewer { background:#152236; color:#edf3fb; }
+[data-theme="dark"] .docblock { border-color:#30405b; }
+[data-theme="dark"] .docblock.focus { background:#51431d; border-left-color:#e2b650; }
+[data-theme="dark"] .issue-button { color:#d9e7fb; }
+[data-theme="dark"] .issue-button:hover,
+[data-theme="dark"] .issue-button.selected { background:#263e5c; }
+[data-theme="dark"] .empty { color:#b2c4db; }
+[data-theme="dark"] .empty strong { color:#d6e6fa; }
+[data-theme="dark"] .line { background:#344760; }
+[data-theme="dark"] .tag { background:#283a51; color:#b9cfea; }
+[data-theme="dark"] .intro-card { background:linear-gradient(110deg,#1b3048,#1b2639); border-color:#35516f; }
+[data-theme="dark"] .progress,
+[data-theme="dark"] .chart-track { background:#2b3e56; }
+[data-theme="dark"] .chart-track span { filter:brightness(1.1); }
+[data-theme="dark"] .loading-screen { color:#b2c6de; }
+[data-theme="dark"] .spinner { border-color:#374760; border-top-color:#85b9f8; }
+[data-theme="dark"] .avatar { color:#d4e8ff; background:#284367; }
+[data-theme="dark"] dialog::backdrop { background:#040912d9; }
+[data-theme="dark"] .toast { background:#2e486d; color:#f6f9ff; }
+[data-theme="dark"] .toast.error { background:#85384d; }
+[data-theme="dark"] .auth-screen { background:radial-gradient(circle at top right,#1c3557 0%,#0d1524 65%,#080e1a 100%); }
+[data-theme="dark"] .auth-icon { background:#315d93; }
+[data-theme="dark"] .auth-card .btn { color:#fff; }
+[data-theme="dark"] input[type="checkbox"] { accent-color:#6aa5e8; }
+
+/* Template aliases and next-unreviewed audit navigation. */
+.template-section-row{align-items:flex-start}
+.template-section-content{flex:1;min-width:0}
+.template-section-controls{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.template-section-controls select,.template-section-controls textarea{width:100%;min-width:0}
+.template-section-controls textarea{min-height:65px;resize:vertical;line-height:1.5}
+.template-section-controls .hint{font-size:11px;color:#718093}
+.issue-nav-toolbar{padding:11px 14px;border-bottom:1px solid #e5ebf3;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.issue-nav-toolbar .btn{min-height:33px;padding:0 11px;white-space:nowrap}
+[data-theme="dark"] .issue-nav-toolbar{border-color:#32435b}
+[data-theme="dark"] .template-section-controls .hint{color:#a9bad1}
+
+/* Revision history: each syllabus occupies one row in the main views. */
+.audit-revision-history{overflow:hidden}
+.audit-revision-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 18px;cursor:pointer;flex-wrap:wrap}
+.audit-revision-toggle:hover{background:rgba(105,140,180,.075)}
+.audit-revision-history[open] .audit-revision-toggle{border-bottom:1px solid #dce4ef}
+.audit-revision-history .table-scroll{margin:0}
+.audit-revision-history th,.audit-revision-history td{padding:11px 13px}
+[data-theme="dark"] .audit-revision-history[open] .audit-revision-toggle{border-color:#35435a}
+@media(max-width:720px){.audit-revision-toggle{align-items:flex-start;flex-direction:column}.audit-revision-history .table-scroll{overflow-x:auto}}

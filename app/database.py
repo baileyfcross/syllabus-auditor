@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS templates (
  id INTEGER PRIMARY KEY, institution_id INTEGER NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
  name TEXT NOT NULL, academic_year TEXT DEFAULT '', version INTEGER NOT NULL DEFAULT 1,
  notes TEXT DEFAULT '', doc_path TEXT DEFAULT '', sections_json TEXT NOT NULL DEFAULT '[]',
- active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+ active INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS requirements (
  id INTEGER PRIMARY KEY, institution_id INTEGER NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
  template_id INTEGER REFERENCES templates(id) ON DELETE SET NULL, name TEXT NOT NULL,
@@ -63,13 +63,16 @@ CREATE TABLE IF NOT EXISTS audit_jobs (
 CREATE TABLE IF NOT EXISTS audits (
  id INTEGER PRIMARY KEY, job_id INTEGER REFERENCES audit_jobs(id) ON DELETE SET NULL,
  rerun_of_id INTEGER REFERENCES audits(id) ON DELETE SET NULL,
+ series_id INTEGER,
  institution_id INTEGER NOT NULL REFERENCES institutions(id), template_id INTEGER REFERENCES templates(id),
  filename TEXT NOT NULL, storage_path TEXT NOT NULL, filetype TEXT NOT NULL,
  course_code TEXT DEFAULT '', academic_year TEXT DEFAULT '',
  status TEXT DEFAULT 'queued', passed INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0,
  failed INTEGER DEFAULT 0, review INTEGER DEFAULT 0, extraction_text TEXT DEFAULT '',
  extraction_json TEXT DEFAULT '[]', created_at TEXT NOT NULL, completed_at TEXT DEFAULT '',
- error TEXT DEFAULT '', created_by INTEGER NOT NULL REFERENCES users(id));
+ error TEXT DEFAULT '', created_by INTEGER NOT NULL REFERENCES users(id),
+ approved_at TEXT DEFAULT '', approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+ approved_path TEXT DEFAULT '', approval_snapshot TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS findings (
  id INTEGER PRIMARY KEY, audit_id INTEGER NOT NULL REFERENCES audits(id) ON DELETE CASCADE,
  requirement_id INTEGER REFERENCES requirements(id) ON DELETE SET NULL, code TEXT DEFAULT '',
@@ -77,7 +80,8 @@ CREATE TABLE IF NOT EXISTS findings (
  severity TEXT DEFAULT '', observed TEXT DEFAULT '', expected TEXT DEFAULT '',
  explanation TEXT DEFAULT '', source_url TEXT DEFAULT '', location TEXT DEFAULT '',
  confidence REAL DEFAULT 0, evidence_json TEXT DEFAULT '{}',
- accepted INTEGER DEFAULT 0, dismissed INTEGER DEFAULT 0);
+ accepted INTEGER DEFAULT 0, dismissed INTEGER DEFAULT 0,
+ reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL, reviewed_at TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS revisions (
  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, target_id INTEGER NOT NULL, actor_id INTEGER,
  old_json TEXT DEFAULT '{}', new_json TEXT DEFAULT '{}', changed_at TEXT NOT NULL);
@@ -101,8 +105,40 @@ def connect():
 def initialize():
     with _db_lock, connect() as db:
         db.executescript(SCHEMA)
+        if 'is_default' not in {c[1] for c in db.execute('PRAGMA table_info(templates)').fetchall()}:
+            db.execute('ALTER TABLE templates ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
+        for column,ddl in {
+            'approved_at': "TEXT DEFAULT ''", 'approved_by': 'INTEGER REFERENCES users(id) ON DELETE SET NULL',
+            'approved_path': "TEXT DEFAULT ''",'approval_snapshot': "TEXT DEFAULT ''"
+        }.items():
+            if column not in {c[1] for c in db.execute('PRAGMA table_info(audits)').fetchall()}:
+                db.execute(f'ALTER TABLE audits ADD COLUMN {column} {ddl}')
+        for column,ddl in {'reviewed_by':'INTEGER REFERENCES users(id) ON DELETE SET NULL','reviewed_at':"TEXT DEFAULT ''"}.items():
+            if column not in {c[1] for c in db.execute('PRAGMA table_info(findings)').fetchall()}:
+                db.execute(f'ALTER TABLE findings ADD COLUMN {column} {ddl}')
+        db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_one_default_template ON templates(institution_id) WHERE is_default=1')
         if 'rerun_of_id' not in {c[1] for c in db.execute('PRAGMA table_info(audits)').fetchall()}:
             db.execute("ALTER TABLE audits ADD COLUMN rerun_of_id INTEGER REFERENCES audits(id) ON DELETE SET NULL")
+        # A syllabus has one durable series, with each rerun stored as an immutable revision.
+        # Backfill old rerun chains without relying on course code or filename equality.
+        if 'series_id' not in {c[1] for c in db.execute('PRAGMA table_info(audits)').fetchall()}:
+            db.execute('ALTER TABLE audits ADD COLUMN series_id INTEGER')
+        legacy={row['id']:row for row in db.execute('SELECT id,rerun_of_id,series_id FROM audits')}
+        def original_series(ident):
+            seen=set()
+            while ident in legacy and ident not in seen:
+                seen.add(ident)
+                record=legacy[ident]
+                if record['series_id'] is not None:
+                    return record['series_id']
+                parent=record['rerun_of_id']
+                if parent is None or parent not in legacy: return ident
+                ident=parent
+            return ident
+        for audit_id,record in legacy.items():
+            if record['series_id'] is None:
+                db.execute('UPDATE audits SET series_id=? WHERE id=?',(original_series(audit_id),audit_id))
+        db.execute('CREATE INDEX IF NOT EXISTS idx_audits_series ON audits(series_id,id)')
         if 'subject_codes' not in {c[1] for c in db.execute('PRAGMA table_info(catalog_imports)').fetchall()}:
             db.execute("ALTER TABLE catalog_imports ADD COLUMN subject_codes TEXT DEFAULT ''")
         db.execute("UPDATE catalog_imports SET status='interrupted',error='Application restarted during scan' WHERE status='running'")
