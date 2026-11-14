@@ -1,87 +1,194 @@
-"""Windows executable entrypoint for Syllabus Auditor.
+"""Syllabus Auditor Windows desktop entry point.
 
-Run as a foreground localhost server with visible startup logs / first-use token.
-Application data is stored outside the installation directory for safe upgrades.
+Runs the existing FastAPI backend *inside this process* on a random loopback port
+and presents the local application in a native Windows WebView2 window. Nothing
+is opened in the user's default browser. The hosted web app is unchanged.
 """
 from __future__ import annotations
 
+import ctypes
+import json
 import os
 import socket
 import sys
 import threading
 import time
-import webbrowser
+import traceback
 from pathlib import Path
 
 HOST = "127.0.0.1"
-PORT = 8765
 MODEL_NAME = "Qwen3-1.7B-Q4_K_M.gguf"
+TITLE = "Syllabus Auditor"
 
 
 def bundled_root() -> Path:
-    # PyInstaller --onedir stores resources in _internal. Under a normal Python
-    # execution this file lives at <project>/packaging/windows/desktop_launcher.py.
     return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])).resolve()
 
 
-def configure_runtime() -> tuple[Path, Path]:
+def ensure_app_import_path() -> Path:
+    """Make the source package importable when this file runs as a script.
+
+    `python packaging/windows/desktop_launcher.py` puts packaging/windows on
+    sys.path, *not* the project root. Frozen PyInstaller builds use its embedded
+    module importer, so we leave its import path alone.
+    """
+    if getattr(sys, "frozen", False):
+        return bundled_root()
+    root = Path(__file__).resolve().parents[2]
+    if not (root / "app" / "__init__.py").is_file() or not (root / "app" / "main.py").is_file():
+        raise RuntimeError(
+            "Could not find the Syllabus Auditor app package next to the "
+            "desktop launcher. Install this patch in the project root."
+        )
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    return root
+
+
+def user_data_dir() -> Path:
+    return Path(os.environ.get("SA_DATA_DIR") or (Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SyllabusAuditor" / "data")).resolve()
+
+
+def configure_runtime(port: int) -> tuple[Path, Path]:
     root = bundled_root()
-    app_data = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SyllabusAuditor" / "data"
-    app_data.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("SA_DATA_DIR", str(app_data))
+    data_dir = user_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["SA_DATA_DIR"] = str(data_dir)
     os.environ.setdefault("SA_MODEL_PATH", str(root / "models" / MODEL_NAME))
     os.environ["SA_HOST"] = HOST
-    os.environ["SA_PORT"] = str(PORT)
-    os.environ["SA_SECURE_COOKIES"] = "false"  # localhost; hosted mode uses HTTPS container
+    os.environ["SA_PORT"] = str(port)
+    os.environ["SA_SECURE_COOKIES"] = "false"  # Only loopback; hosted mode keeps HTTPS.
 
-    tesseract_dir = root / "tesseract"
-    tesseract_exe = tesseract_dir / "tesseract.exe"
-    if tesseract_exe.is_file():
-        os.environ["PATH"] = str(tesseract_dir) + os.pathsep + os.environ.get("PATH", "")
-        if (tesseract_dir / "tessdata").is_dir():
-            os.environ["TESSDATA_PREFIX"] = str(tesseract_dir / "tessdata")
+    ocr = root / "tesseract"
+    if (ocr / "tesseract.exe").is_file():
+        os.environ["PATH"] = str(ocr) + os.pathsep + os.environ.get("PATH", "")
+        if (ocr / "tessdata").is_dir():
+            os.environ["TESSDATA_PREFIX"] = str(ocr / "tessdata")
 
     browser_dir = root / "ms-playwright"
     if browser_dir.is_dir():
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browser_dir)
-    return root, app_data
+    return root, data_dir
 
 
-def listening() -> bool:
+def select_port() -> int:
+    # Avoid conflicts with a developer's localhost:8765 web server and other apps.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((HOST, 0))
+        return int(sock.getsockname()[1])
+
+
+def error_message(message: str) -> None:
+    if sys.platform == "win32":
+        ctypes.windll.user32.MessageBoxW(None, message, TITLE, 0x10)
+    else:
+        print(message, file=sys.stderr)
+
+
+def report_failure(exc: BaseException) -> None:
+    log = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "SyllabusAuditor" / "logs" / "desktop.log"
     try:
-        with socket.create_connection((HOST, PORT), timeout=0.3):
-            return True
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as f:
+            f.write(time.strftime("\n%Y-%m-%d %H:%M:%S desktop startup failure\n"))
+            f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
     except OSError:
+        pass
+    error_message(f"Syllabus Auditor could not start.\n\n{exc}\n\nDetails: {log}")
+
+
+def singleton_mutex():
+    """Prevent two installed desktop processes from auditing the same database."""
+    if sys.platform != "win32":
+        return None
+    kernel = ctypes.windll.kernel32
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    kernel.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel.CreateMutexW(None, False, "Local\\SyllabusAuditorDesktop")
+    if not handle:
+        raise OSError("Could not create desktop application mutex")
+    if kernel.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        kernel.CloseHandle(ctypes.c_void_p(handle))
+        error_message("Syllabus Auditor is already running.\nSwitch to its existing application window.")
         return False
+    return handle
 
 
-def open_when_ready() -> None:
-    for _ in range(150):
-        time.sleep(0.2)
-        if listening():
-            webbrowser.open(f"http://{HOST}:{PORT}")
+def await_server(server, thread: threading.Thread, port: int, timeout: float = 30) -> None:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if server.started:
             return
+        if not thread.is_alive():
+            raise RuntimeError("The local application service stopped before initialization.")
+        time.sleep(0.1)
+    raise TimeoutError(f"Application service did not start on port {port}.")
+
+
+def prefill_first_run_token(window, token_path: Path) -> None:
+    """Fill the native window's setup form without exposing a permanent JS bridge.
+
+    Hosted installs retain normal token entry. Only the local process reads this
+    file, and injection happens once while the initial setup form is visible.
+    """
+    if not token_path.is_file():
+        return
+    token = token_path.read_text(encoding="utf-8").strip()
+    if not token:
+        return
+    literal = json.dumps(token)
+    script = ("(() => { const field = document.querySelector('#f-token'); "
+              "if (!field) return false; field.value = " + literal + "; "
+              "field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()")
+    for _ in range(50):
+        try:
+            if window.evaluate_js(script):
+                return
+        except Exception:
+            pass
+        time.sleep(0.15)
 
 
 def main() -> int:
-    root, data_dir = configure_runtime()
-    print("Syllabus Auditor - Windows Desktop", flush=True)
-    print("Application files:", root, flush=True)
-    print("Private data:", data_dir, flush=True)
-    print("Open URL:", f"http://{HOST}:{PORT}", flush=True)
-    if listening():
-        print(f"ERROR: Port {PORT} is already in use. Close the other program first.", file=sys.stderr)
-        input("Press Enter to close...")
-        return 1
+    mutex = singleton_mutex()
+    if mutex is False:
+        return 0
+    server = None
+    thread = None
+    try:
+        port = select_port()
+        _, data_dir = configure_runtime(port)
+        # Source launches need the project root on sys.path; frozen builds use
+        # PyInstaller's embedded modules. Configure data paths before app import.
+        ensure_app_import_path()
+        from app.main import app
+        import uvicorn
+        import webview
 
-    # Import after setting environment variables; app.config initializes data dirs
-    # and the bootstrap token during FastAPI startup.
-    from app.main import app
-    import uvicorn
+        server = uvicorn.Server(uvicorn.Config(app=app, host=HOST, port=port,
+                                              workers=1, log_level="warning", access_log=False))
+        thread = threading.Thread(target=server.run, name="syllabus-local-server", daemon=True)
+        thread.start()
+        await_server(server, thread, port)
 
-    threading.Thread(target=open_when_ready, daemon=True, name="browser-open").start()
-    uvicorn.run(app, host=HOST, port=PORT, workers=1, log_level="info", access_log=False)
-    return 0
+        webview.settings["ALLOW_DOWNLOADS"] = True
+        webview.settings["ALLOW_FILE_URLS"] = False
+        webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
+        webview.settings["SHOW_DEFAULT_MENUS"] = False
+        window = webview.create_window(TITLE, f"http://{HOST}:{port}/",
+                                       width=1360, height=860, min_size=(960, 620),
+                                       text_select=True, confirm_close=False)
+        # The WebView uses the OS-provided Edge WebView2 engine; no extra browser window.
+        webview.start(func=lambda: prefill_first_run_token(window, data_dir / "bootstrap-token.txt"),
+                      gui="edgechromium", debug=False)
+        return 0
+    finally:
+        if server:
+            server.should_exit = True
+        if thread and thread.is_alive():
+            thread.join(timeout=10)
+        if mutex and sys.platform == "win32":
+            ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(mutex))
 
 
 if __name__ == "__main__":
@@ -90,6 +197,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         raise SystemExit(0)
     except Exception as exc:
-        print("Syllabus Auditor could not start:", exc, file=sys.stderr, flush=True)
-        input("Press Enter to close...")
-        raise
+        report_failure(exc)
+        raise SystemExit(1)
