@@ -1,6 +1,6 @@
 /* Syllabus Auditor SPA: dependency-free, same-origin and CSP-friendly. */
 'use strict';
-const S={user:null,route:'dashboard',inst:0,detail:null,selectedFinding:null,files:[],poll:null,activeJob:null,dataset:[],q:''};
+const S={user:null,route:'dashboard',inst:0,detail:null,selectedFinding:null,files:[],poll:null,activeJob:null,dataset:[],q:'',catalogSubject:'',catalogSearch:''};
 const $=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const attr=v=>esc(v);
@@ -72,8 +72,12 @@ async function renderCheck(){
  `<div class="section-bar"><h2>Recent batches</h2></div><div class="panel">${table(['Batch','Institution','Progress','Status',''],jobs.slice(0,25).map(j=>`<tr><td>#${j.id}<br/><small>${prettyDate(j.created_at)}</small></td><td>${esc(j.institution_name)}</td><td>${j.finished} / ${j.total}<div class="progress" style="margin-top:6px"><span style="width:${j.total?j.finished/j.total*100:0}%"></span></div></td><td>${pill(j.status)}</td><td>${aButton('Details','job-view',`data-id="${j.id}"`)}</td></tr>`))}</div>`;
  bindDropzone();
 }
+function canManageAudit(a){return Boolean(a&&S.user&&(S.user.role==='admin'||S.user.id===a.created_by))}
+function reportActions(a){return (a.status==='complete'?aButton('Inspect','open-audit',`data-id="${a.id}"`):'')+
+ (canManageAudit(a)&&['complete','error','interrupted'].includes(a.status)?aButton('Rerun checks','rerun-audit',`data-id="${a.id}"`):'')+
+ (canManageAudit(a)&&!['queued','running'].includes(a.status)?aButton('Delete','delete-audit',`data-id="${a.id}"`):'')}
 async function renderAudits(){let d=await api('/api/audits'+(S.inst?'?institution_id='+S.inst:''));S.dataset=d;
- const rows=d.map(a=>`<tr><td><a href="#audit/${a.id}" class="filename">${esc(a.filename)}</a><br/><small>${esc(a.course_code||'Unidentified')}</small></td><td>${esc(a.academic_year||'-')}</td><td>${pill(compliance(a))}</td><td><span class="pill passed">${a.passed} passed</span> <span class="pill failed">${a.failed} failed</span> <span class="pill review">${a.review} review</span></td><td>${prettyDate(a.created_at)}</td><td>${a.status==='complete'?aButton('Inspect','open-audit',`data-id="${a.id}"`):''}</td></tr>`);
+ const rows=d.map(a=>`<tr><td><a href="#audit/${a.id}" class="filename">${esc(a.filename)}</a><br/><small>${esc(a.course_code||'Unidentified')}${a.rerun_of_id?' · Rerun of #'+a.rerun_of_id:''}</small></td><td>${esc(a.academic_year||'-')}</td><td>${pill(compliance(a))}</td><td><span class="pill passed">${a.passed} passed</span> <span class="pill failed">${a.failed} failed</span> <span class="pill review">${a.review} review</span></td><td>${prettyDate(a.created_at)}</td><td><div class="actions">${reportActions(a)}</div></td></tr>`);
  $('content').innerHTML=sectionIntro('Audit Results','Browse completed and in-progress syllabus checks.',aButton(icon('download')+' Export CSV','download-csv')+aButton(icon('plus')+' New audit','go-check','','primary'))+`<div class="panel">${table(['Document','Academic year','Status','Findings','Submitted',''],rows)}</div>`;
 }
 async function renderAuditDetail(id){let data=await api('/api/audits/'+id);S.detail=data;
@@ -83,7 +87,7 @@ async function renderAuditDetail(id){let data=await api('/api/audits/'+id);S.det
  let blocks=[];try{blocks=JSON.parse(a.extraction_json||'[]')}catch{}
  const docHTML=blocks.length?blocks.slice(0,2500).map((b,i)=>`<div class="docblock" id="doc-${i}" data-location="${attr(b.location)}"><small>${esc(b.location)}</small>${esc(b.text)}</div>`).join(''):empty('Text preview is not available');
  const focus=chosen?.location||'';
- $('content').innerHTML=sectionIntro('Review Syllabus',`${a.filename} · ${a.course_code||'Unknown course'} · ${a.academic_year||'Unspecified academic year'}`,aButton('Back to results','go-audits')+aButton(icon('download')+' PDF report','report-pdf',`data-id="${a.id}"`)+aButton('DOCX report','report-docx',`data-id="${a.id}"`))+
+ $('content').innerHTML=sectionIntro('Review Syllabus',`${a.filename} · ${a.course_code||'Unknown course'} · ${a.academic_year||'Unspecified academic year'}${a.rerun_of_id?' · Rerun of audit #'+a.rerun_of_id:''}`,aButton('Back to results','go-audits')+aButton(icon('download')+' PDF report','report-pdf',`data-id="${a.id}"`)+aButton('DOCX report','report-docx',`data-id="${a.id}"`)+(canManageAudit(a)&&['complete','error','interrupted'].includes(a.status)?aButton('Rerun checks','rerun-audit',`data-id="${a.id}"`):'')+(canManageAudit(a)&&!['queued','running'].includes(a.status)?aButton('Delete report','delete-audit',`data-id="${a.id}"`,'danger'): ''))+
  `<div class="grid metrics" style="margin-bottom:18px">${stat('Passed',a.passed,'check','Verified requirements')}${stat('Warnings',a.warnings,'alert','Potential discrepancies')}${stat('Failures',a.failed,'shield','Confirmed differences')}${stat('Needs review',a.review,'eye','Uncertain or unverified')}</div>`+
  `<div class="actions" style="margin-bottom:17px">${a.filetype==='.pdf'?aButton('Open original PDF','open-original',`data-id="${a.id}"`):aButton('Download original','open-original',`data-id="${a.id}"`)} ${a.filetype==='.docx'?aButton('Download approved corrections','corrected',`data-id="${a.id}"`):''} ${a.job_id?aButton('Batch ZIP','batch-zip',`data-id="${a.job_id}"`):''} ${a.course_code?aButton('Compare previous audit','compare-audit',`data-id="${a.id}"`):''}</div>`+
  `<div class="audit-detail"><div class="panel audit-issues"><div class="panel-head"><h2>Validation findings</h2><span class="pill">${findings.length}</span></div><div class="issue-nav">${issueButtons||empty('No findings')}</div></div><div class="panel"><div class="panel-head"><h2>Document extraction</h2><span class="tag">Original locations preserved</span></div><div class="docviewer" id="docviewer">${docHTML}</div></div><div class="panel inspection" id="inspector">${inspector(chosen)}</div></div>`;
@@ -95,7 +99,7 @@ function inspector(f){if(!f)return empty('Select a finding to inspect');
 function focusLocation(location){if(!location)return;const blocks=[...document.querySelectorAll('.docblock')];for(const b of blocks)b.classList.remove('focus');let node=blocks.find(x=>x.dataset.location===location)||blocks.find(x=>x.dataset.location?.startsWith(location.split(',')[0]));if(node){node.classList.add('focus');node.scrollIntoView({block:'center',behavior:'smooth'})}}
 async function renderTemplates(){let inst=needInstitution();if(!inst){$('content').innerHTML=noInst();return}let rows=await api('/api/templates?institution_id='+inst);S.dataset=rows;
  $('content').innerHTML=sectionIntro('Syllabus Templates','Manage institutional master syllabi and required document sections.',isAdmin()?aButton(icon('plus')+' Upload template','template-add','','primary'):'')+
- `<div class="status-banner" style="margin-bottom:18px">${icon('book')} Upload a master template, then mark the extracted headings that every syllabus must contain. Policy wording is managed separately.</div><div class="panel">${table(['Template','Academic year','Version','Headings','Status',''],rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><br/><small>${esc(t.notes||'No notes')}</small></td><td>${esc(t.academic_year||'Any')}</td><td>v${t.version}</td><td>${JSON.parse(t.sections_json||'[]').length}</td><td>${pill(t.active?'ready':'interrupted')}</td><td>${aButton('Manage','template-edit',`data-id="${t.id}"`)}</td></tr>`))}</div>`;
+ `<div class="status-banner" style="margin-bottom:18px">${icon('book')} Upload a master template, then mark the extracted headings that every syllabus must contain. Policy wording is managed separately.</div><div class="panel">${table(['Template','Academic year','Version','Headings','Status',''],rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><br/><small>${esc(t.notes||'No notes')}</small></td><td>${esc(t.academic_year||'Any')}</td><td>v${t.version}</td><td>${JSON.parse(t.sections_json||'[]').length}</td><td>${pill(t.active?'ready':'interrupted')}</td><td>${aButton('Manage','template-edit',`data-id="${t.id}"`)} ${isAdmin()?aButton('Delete','template-delete',`data-id="${t.id}"`,'danger'):''}</td></tr>`))}</div>`;
 }
 function templateAdd(){modal(modalHead('Upload master syllabus template')+`<form id="template-create" class="stack">${input('name','Template name','','text','',true)}${input('academic_year','Academic year',S.institutions.find(x=>x.id===needInstitution())?.academic_year||'')}${textarea('notes','Notes')}${input('file','DOCX or PDF file','','file','Headings will be extracted; all can be manually marked required',true)}${formFooter('Upload template')}</form>`)}
 function templateEdit(id){const t=S.dataset.find(x=>x.id===id);if(!t)return;
@@ -106,17 +110,107 @@ const modeOptions=[['exact','Exact approved wording'],['semantic','Semantically 
 const severityOptions=[['critical','Critical'],['warning','Warning'],['info','Informational']];
 async function renderPolicies(){let inst=needInstitution();if(!inst){$('content').innerHTML=noInst();return}let req=await api('/api/requirements?institution_id='+inst);S.dataset=req;
  $('content').innerHTML=sectionIntro('Required Policies & Rules','Configure official language, acceptable variants, severity and validation behavior.',isAdmin()?aButton(icon('plus')+' Add requirement','policy-add','','primary'):'')+
- `<div class="panel">${table(['Requirement','Category','Matching rule','Severity','Version',''],req.map(r=>`<tr><td><strong>${esc(r.name)}</strong>${r.source_url?`<br/><small>${esc(r.source_url.slice(0,65))}</small>`:''}</td><td>${esc(r.category)}</td><td>${esc(r.mode)}</td><td>${pill(r.severity==='critical'?'failed':r.severity==='warning'?'warning':'review')}</td><td>v${r.version}</td><td>${aButton('Edit','policy-edit',`data-id="${r.id}"`)}</td></tr>`))}</div>`;
+ `<div class="panel">${table(['Requirement','Category','Matching rule','Severity','Version',''],req.map(r=>`<tr><td><strong>${esc(r.name)}</strong>${r.source_url?`<br/><small>${esc(r.source_url.slice(0,65))}</small>`:''}</td><td>${esc(r.category)}</td><td>${esc(r.mode)}</td><td>${pill(r.severity==='critical'?'failed':r.severity==='warning'?'warning':'review')}</td><td>v${r.version}</td><td>${aButton('Edit','policy-edit',`data-id="${r.id}"`)} ${isAdmin()?aButton('Delete','policy-delete',`data-id="${r.id}"`,'danger'):''}</td></tr>`))}</div>`;
 }
 function policyForm(existing){const r=existing||{};
  return modalHead(existing?'Edit requirement':'New requirement')+`<form id="${existing?'policy-update':'policy-create'}" ${existing?`data-id="${r.id}"`:''} class="stack">${input('name','Requirement name',r.name||'','text','e.g. Academic integrity statement',true)}<div class="form-row">${selectField('category','Category',[['policy','School policy'],['syllabus','Syllabus field'],['template','Template section']],r.category||'policy')}${selectField('mode','Matching rule',modeOptions,r.mode||'exact')}</div><div class="form-row">${selectField('severity','Severity',severityOptions,r.severity||'critical')}${input('department','Department limitation (optional)',r.department||'','text','Course prefix, e.g. CSC')}</div>${textarea('expected_text','Required official text',r.expected_text||'','Leave empty for presence-only rules')}${textarea('variants','Other approved versions',(()=>{try{return JSON.parse(r.variants_json||'[]').join('\n')}catch{return ''}})(),'One approved variant per line')}${input('keywords','Matching headings / keywords',r.keywords||'','text','Comma-separated section titles and synonyms')}${input('source_url','Official policy source URL',r.source_url||'','url','Must belong to an institution-approved domain')}
  <div class="form-row">${input('effective_from','Effective from',r.effective_from||'','text','YYYY-MM-DD; optional')}${input('effective_to','Effective until',r.effective_to||'','text','YYYY-MM-DD; optional')}</div>${checkField('active','Requirement active',existing?r.active:true)}${formFooter(existing?'Save requirement':'Create requirement')}</form>`;
 }
-async function renderCatalog(){let inst=needInstitution();if(!inst){$('content').innerHTML=noInst();return}let rows=await api('/api/courses?institution_id='+inst);S.dataset=rows;const cfg=S.institutions.find(i=>i.id===inst);
- $('content').innerHTML=sectionIntro('Course Catalog','Maintain approved course metadata by institution and catalog year.',isAdmin()?aButton(icon('plus')+' Add course','course-add','','primary')+aButton(icon('search')+' Discover course','course-discover'):'')+
- `<div class="status-banner" style="margin-bottom:18px">${icon('globe')} <div><strong>Official catalog:</strong> ${cfg.catalog_url?`<a target="_blank" rel="noopener" href="${attr(cfg.catalog_url)}">${esc(cfg.catalog_url)}</a>`:'Not configured. Open Settings to add an official catalog URL.'}<br/><small>Reference content remains unverified until it is confirmed against the official source.</small></div></div>`+
- `<div class="panel">${table(['Course','Title','Academic year','Source status','Version',''],rows.map(c=>`<tr><td><strong>${esc(c.code)}</strong><br/><small>${esc(c.credits||'Credits not specified')} credits</small></td><td>${esc(c.title)}</td><td>${esc(c.academic_year||'Any')}</td><td>${c.last_verified_at?pill('verified'):pill('needs_review')}</td><td>v${c.version}</td><td>${aButton('Edit','course-edit',`data-id="${c.id}"`)} ${c.source_url?aButton('Verify source','source-verify',`data-id="${c.id}" data-type="course"`):''}</td></tr>`))}</div>`;
+function acalogSubjectUrl(raw, subject='') {
+ const url=new URL(raw); const cat=url.searchParams.get('catoid')||url.searchParams.get('cur_cat_oid');
+ const nav=url.searchParams.get('navoid');
+ if(url.protocol!=='https:' || !/\/content\.php$/i.test(url.pathname) || !cat || !nav)throw Error('Enter an official Acalog Course Descriptions URL with a catalog ID and navoid.');
+ const code=String(subject||'').trim().toUpperCase();
+ if(code && !/^[A-Z][A-Z0-9 &/-]{1,11}$/.test(code))throw Error('Enter a valid subject code, such as CIS, CSC, or MATH.');
+ if(!code)return url.href;
+ const params=new URLSearchParams();
+ for(const [k,v] of [['filter[27]',code],['filter[29]',''],['filter[course_type]','-1'],['filter[keyword]',''],['filter[32]','1'],['filter[cpage]','1'],['cur_cat_oid',cat],['expand',''],['navoid',nav],['search_database','Filter'],['filter[exact_match]','1']])params.set(k,v);
+ url.search=params.toString();url.hash='acalog_template_course_filter';return url.href;
 }
+function catalogSubjectUrl(raw, subject='') {
+ const url=new URL(raw);
+ if(url.protocol==='https:' && /\/Student\/Courses(?:\/Search)?\/?$/i.test(url.pathname)) {
+  const code=String(subject||'').trim().toUpperCase();
+  if(code && !/^[A-Z]{2,6}$/.test(code))throw Error('Enter a subject code such as CIS or CSC.');
+  if(code){url.pathname=url.pathname.replace(/\/Search\/?$/i,'').replace(/\/$/,'')+'/Search';url.searchParams.set('subjects',code)}
+  url.hash='';return url.href;
+ }
+ return acalogSubjectUrl(raw,subject);
+}
+function isMyOCC(raw){try{return /\/Student\/Courses(?:\/Search)?\/?$/i.test(new URL(raw).pathname)}catch{return false}}
+const MYOCC_URL='https://colss-prod.ec.sunyocc.edu/Student/Courses';
+function isOCCProfile(cfg){try{const host=new URL(cfg.catalog_url||'').hostname.toLowerCase();return host==='sunyocc.edu'||host.endsWith('.sunyocc.edu')||String(cfg.short_name||'').trim().toUpperCase()==='OCC'}catch{return String(cfg.short_name||'').trim().toUpperCase()==='OCC'}}
+function acalogFallbackUrl(cfg){return isMyOCC(cfg.catalog_url||'')?(isOCCProfile(cfg)?'https://catalog.sunyocc.edu/content.php?catoid=15&navoid=755':''):cfg.catalog_url||''}
+async function renderCatalog(){let inst=needInstitution();if(!inst){$('content').innerHTML=noInst();return}let [rows,imports]=await Promise.all([api('/api/courses?institution_id='+inst),api('/api/catalog-imports?institution_id='+inst)]);S.dataset=rows;const cfg=S.institutions.find(i=>i.id===inst);
+ const subjects=[...new Set(rows.map(c=>String(c.code||'').split('-')[0].toUpperCase()).filter(Boolean))].sort();
+ const subject=subjects.includes(S.catalogSubject)?S.catalogSubject:'';
+ const query=S.catalogSearch.trim().toUpperCase();
+ const filtered=rows.filter(c=>(!subject||c.code.toUpperCase().startsWith(subject+'-'))&&(!query||[c.code,c.title,c.description].some(v=>String(v||'').toUpperCase().includes(query))));
+ $('content').innerHTML=sectionIntro('Course Catalog','Maintain approved course metadata by institution and catalog year.',isAdmin()?aButton(icon('plus')+' Add course','course-add','','primary')+aButton(icon('search')+' Discover course','course-discover')+aButton(icon('globe')+' Bulk Import Catalog','catalog-import-start','','primary')+aButton(icon('download')+' Browser Capture Import','catalog-browser-start'):'')+
+ `<div class="status-banner" style="margin-bottom:18px">${icon('globe')} <div><strong>Official catalog:</strong> ${cfg.catalog_url?`<a target="_blank" rel="noopener" href="${attr(cfg.catalog_url)}">${esc(cfg.catalog_url)}</a>`:'Not configured. Open Settings to add an official catalog URL.'}<br/><small>Reference content remains unverified until it is confirmed against the official source.</small></div></div>`+
+ `<div class="section-bar"><h2>Catalog imports</h2></div><div class="panel">${table(['Scan','Year','Found','Status',''],imports.map(j=>`<tr><td>#${j.id} · ${prettyDate(j.created_at)}</td><td>${esc(j.academic_year)}</td><td>${j.courses_found} / ${j.pages_scanned} pages</td><td>${pill(j.status)}</td><td>${aButton('View results','catalog-import-view',`data-id="${j.id}"`)}</td></tr>`))}</div>`+
+ `<div class="section-bar"><h2>Course records</h2><div class="actions"><span class="muted tiny">${filtered.length} shown of ${rows.length} saved</span>${isAdmin()&&rows.length?aButton('Delete all course records','course-delete-all',`data-count="${rows.length}"`,'danger'):''}</div></div>`+
+ `<form id="catalog-record-filter" class="catalog-filters"><div class="field"><label for="catalog-subject-filter">Subject code</label><select id="catalog-subject-filter" name="subject"><option value="">All subjects</option>${subjects.map(code=>`<option value="${attr(code)}" ${code===subject?'selected':''}>${esc(code)}</option>`).join('')}</select></div>${input('query','Find courses',S.catalogSearch,'search','Search course code, title, or description')}<button class="btn small" type="submit">Filter courses</button>${(subject||query)?aButton('Clear filters','catalog-record-clear'):''}</form>`+
+ `<div class="panel">${table(['Course' ,'Title','Academic year','Source status','Version',''],filtered.map(c=>`<tr><td><strong>${esc(c.code)}</strong><br/><small>${esc(c.credits||'Credits not specified')} credits</small></td><td>${esc(c.title)}</td><td>${esc(c.academic_year||'Any')}</td><td>${c.last_verified_at?pill('verified'):pill('needs_review')}</td><td>v${c.version}</td><td>${aButton('Edit','course-edit',`data-id="${c.id}"`)} ${isAdmin()?aButton('Delete','course-delete',`data-id="${c.id}"`,'danger'):''} ${c.source_url?aButton('Verify source','source-verify',`data-id="${c.id}" data-type="course"`):''}</td></tr>`))}</div>`;
+} 
+function catalogImportForm(){
+ const cfg=S.institutions.find(i=>i.id===needInstitution())||{};
+ // MyOCC is the default for OCC. Other institutions retain their configured
+ // catalog until they explicitly select another provider.
+ const myocc=isMyOCC(cfg.catalog_url||'')||isOCCProfile(cfg);
+ const defaultSeed=myocc?MYOCC_URL:acalogFallbackUrl(cfg);
+ return modalHead('Bulk import course catalog')+
+ `<form id="catalog-import-start" class="stack">
+ ${selectField('provider','Catalog source',[["myocc","MyOCC Self-Service (default for OCC)"],["acalog","Academic Catalog / Acalog (fallback)"]],myocc?'myocc':'acalog')}
+ ${input('seed_url','Course catalog URL',defaultSeed,'url','MyOCC is the default for OCC. Select Acalog to use the academic catalog as a fallback.',true)}
+ ${input('academic_year','Catalog academic year',cfg.academic_year||'','text','The selected year is stored on imported records. MyOCC itself does not guarantee historical year-specific data.',true)}
+ ${input('subject_code','Subject codes (optional)','','text','MyOCC: CIS,CSC,MATH (comma-separated). Acalog fallback: one code. Leave blank for discovery.')}
+ ${selectField('max_pages','Maximum result pages',[[50,'50 (quick check)'],[250,'250'],[1000,'1,000 (recommended)'],[3500,'3,500 (large import)']],250)}
+ <div class="callout">MyOCC uses a local Chromium/Edge browser to scan its dynamic search results. Choose <strong>Academic Catalog / Acalog (fallback)</strong> to activate the existing Acalog importer. Results from either source are staged for approval; MyOCC data is not automatically verified as catalog-year authoritative.</div>
+ ${formFooter('Scan courses')}</form>`;
+}
+function catalogBrowserCaptureForm(){
+ const cfg=S.institutions.find(i=>i.id===needInstitution())||{};
+ return modalHead('Import a catalog captured in your browser')+
+ `<div class="stack"><div class="callout"><strong>Use when automatic catalog scans fail.</strong> Open the official course listing in Chrome or Edge. The browser capture script reads public catalog pages from that tab and downloads a JSON file. Nothing is uploaded until you select that file here.</div>
+ <div class="catalog-subject-picker">${input('subject_code','Subject code (optional)','','text','Enter CIS, CSC, MATH, etc. Blank uses the entered catalog URL.').replace('id="f-subject_code"','id="catalog-capture-subject"')}${aButton('Open filtered course list','catalog-browser-open-subject','','small')+aButton('Use MyOCC Self-Service','catalog-browser-use-myocc','','small')}</div>
+ <div class="callout">MyOCC Self-Service is a separate provider. For MyOCC, choose a subject (e.g. CIS) and use the MyOCC script. Captures may only include currently loaded results and are never automatically verified.</div><div class="stack tiny"><p><strong>1.</strong> Open <a target="_blank" rel="noopener noreferrer" href="${attr(cfg.catalog_url||'https://catalog.sunyocc.edu/content.php?catoid=15&navoid=755')}">the official Course Descriptions page</a>.</p>
+ <p><strong>2.</strong> After opening the filtered catalog, click <b>Copy capture script</b> below. In the catalog tab, open Developer Tools (F12), switch to <b>Console</b>, paste the script, and press Enter. Chrome/Edge may require you to enable console pasting.</p>
+ <p><strong>3.</strong> When the JSON download finishes, return here to upload it for review. Keep the browser tab open until the download completes. If the site blocks some pages, the results will be marked partial.</p></div>
+ <div class="actions">${aButton('Copy capture script','catalog-browser-copy','','primary')}<a class="btn small" href="/assets/catalog_capture.js" download="catalog_capture.js">Acalog script</a><a class="btn small" href="/assets/ellucian_capture.js" download="ellucian_capture.js">MyOCC script</a></div>
+ <form id="catalog-browser-upload" class="stack">
+ ${input('seed_url','Official catalog URL',cfg.catalog_url||'https://catalog.sunyocc.edu/content.php?catoid=15&navoid=755','url','Can be the original catalog URL or the filtered URL you captured.',true)}
+ ${input('academic_year','Catalog academic year',cfg.academic_year||'2026-2027','text','Full year, e.g. 2026-2027',true)}
+ ${input('file','Browser capture JSON or saved HTML','','file','Use the downloaded JSON (recommended) or HTML saved from the catalog page.',true)}
+ <div class="callout">Courses remain unverified until separately checked against their official source. You will see an import preview before accepting any changes.</div>
+ ${formFooter('Preview captured courses')}</form></div>`;
+}
+async function showCatalogImport(id,offset=0,q=''){
+ const report=await api(`/api/catalog-imports/${id}`);
+ let rows={total:0,items:[],offset,limit:100};
+ if(['ready','applied'].includes(report.status))rows=await api(`/api/catalog-imports/${id}/items?offset=${offset}&limit=100&q=${encodeURIComponent(q)}`);
+ const counts=report.counts||{},done=['ready','applied','failed','interrupted'].includes(report.status);
+ let html=modalHead('Catalog import #'+id)+`<div class="stack">
+ <p><strong>${esc(report.academic_year)}</strong> · ${pill(report.status)} · ${report.pages_scanned} pages checked · <strong>${report.courses_found}</strong> unique course codes found</p>
+ <p class="tiny muted wrap">Source: <a href="${attr(report.seed_url)}" target="_blank" rel="noopener noreferrer">${esc(report.seed_url)}</a></p>
+ ${report.error?`<div class="callout">${esc(report.error)}<p style="margin-top:8px">If the catalog is visible in your browser, use Browser Capture Import from the Course Catalog page.</p></div>`:''}
+ ${report.truncated?`<div class="callout">The scan reached its page or course limit. These results are not the complete catalog. Consider scanning a smaller department listing or increasing the page limit.</div>`:''}
+ ${report.errors?.length?`<details><summary>${report.errors.length} access/retrieval issue(s)</summary><div class="quote tiny">${report.errors.map(esc).join('<hr>')}</div></details>`:''}
+ ${!done?`<p class="muted">The scan is running in the background. This window will refresh automatically; you can close it and reopen from the Course Catalog page.</p>`:''}`;
+ if(['ready','applied'].includes(report.status)){
+  html+=`<div class="grid two"><div class="panel panel-pad"><strong>${counts.new||0}</strong><br><small>New complete records</small></div><div class="panel panel-pad"><strong>${counts.changed||0}</strong><br><small>Existing records with differences</small></div><div class="panel panel-pad"><strong>${counts.unchanged||0}</strong><br><small>Existing matches</small></div><div class="panel panel-pad"><strong>${counts.incomplete||0}</strong><br><small>Incomplete records, not imported</small></div></div>
+ <div class="callout">Importing courses creates unverified reference records. The normal official-source verification remains required before a catalog description can receive a confirmed pass.</div>
+ <form id="catalog-import-search" class="flex" data-id="${id}">${input('q','Filter by course or title',q,'text','CIS, CSC, Math...')}<button type="submit" class="btn small">Search results</button></form>
+ <div class="panel">${table(['Course','Title','Description','Result'],rows.items.map(c=>`<tr><td><strong>${esc(c.code)}</strong></td><td>${esc(c.title)}<br><small>${esc(c.credits||'No credits')} credits</small></td><td class="tiny">${esc(c.description?c.description.slice(0,140)+(c.description.length>140?'…':''):'Not extracted')}</td><td>${pill(c.status)}</td></tr>`))}</div>
+ <div class="flex justify-between"><span class="tiny muted">${rows.total?rows.offset+1:0}-${Math.min(rows.offset+rows.items.length,rows.total)} of ${rows.total} courses</span><div>${offset>0?aButton('Previous','catalog-import-page',`data-id="${id}" data-offset="${Math.max(0,offset-100)}" data-q="${attr(q)}"`):''}${offset+100<rows.total?aButton('Next','catalog-import-page',`data-id="${id}" data-offset="${offset+100}" data-q="${attr(q)}"`):''}</div></div>
+ ${isAdmin()?`<div class="form-footer">${aButton('Import new courses','catalog-import-apply',`data-id="${id}" data-update="false"`,'primary')}${aButton('Import and update existing','catalog-import-apply',`data-id="${id}" data-update="true"`)}</div>`:''}`;
+ }
+ html+='</div>';
+ if($('modal').open)$('modalContent').innerHTML=html;else modal(html);
+ clearInterval(S.poll);S.poll=null;
+ if(!done)S.poll=setInterval(async()=>{if(!$('modal').open){clearInterval(S.poll);S.poll=null;return}try{await showCatalogImport(id,offset,q)}catch(err){notify(err.message,'error');clearInterval(S.poll);S.poll=null}},2100);
+}
+
 function courseForm(existing){let c=existing||{};
  return modalHead(existing?'Edit catalog course':'Add catalog course')+`<form class="stack" id="${existing?'course-update':'course-create'}" ${existing?`data-id="${c.id}"`:''}>${input('code','Course code',c.code||'','text','e.g. CIS-125',true)}${input('title','Official course title',c.title||'')}${textarea('description','Official course description',c.description||'','Use approved exact wording for catalog verification')}
  <div class="form-row">${input('credits','Credits',c.credits||'')}${input('academic_year','Catalog academic year',c.academic_year||S.institutions.find(i=>i.id===needInstitution())?.academic_year||'')}</div>${textarea('prerequisites','Prerequisites',c.prerequisites||'')}${input('source_url','Direct official course URL',c.source_url||'','url','This is required for live verification')}${formFooter(existing?'Save course':'Add course')}</form>`;
@@ -132,7 +226,7 @@ function sourceInspect(id){let s=S.dataset.find(x=>x.id===id);if(!s)return;
 async function renderHistory(){const jobs=await api('/api/jobs');const audits=await api('/api/audits');
  $('content').innerHTML=sectionIntro('History & Reports','Track validation batches, source revisions and prior audits.',aButton('Export all summaries','download-csv'))+
  `<div class="section-bar"><h2>Audit batches</h2></div><div class="panel">${table(['Batch','Date','Institution','Progress','Status','Export'],jobs.map(j=>`<tr><td>#${j.id}</td><td>${prettyDate(j.created_at)}</td><td>${esc(j.institution_name)}</td><td>${j.finished}/${j.total}</td><td>${pill(j.status)}</td><td>${aButton('View','job-view',`data-id="${j.id}"`)} ${aButton('ZIP','batch-zip',`data-id="${j.id}"`)}</td></tr>`))}</div>`+
- `<div class="section-bar"><h2>Recent audit history</h2></div><div class="panel">${table(['Course','Document','Date','Status',''],audits.slice(0,70).map(a=>`<tr><td>${esc(a.course_code||'-')}</td><td>${esc(a.filename)}</td><td>${prettyDate(a.completed_at||a.created_at)}</td><td>${pill(compliance(a))}</td><td>${aButton('Review','open-audit',`data-id="${a.id}"`)}</td></tr>`))}</div>`;
+ `<div class="section-bar"><h2>Recent audit history</h2></div><div class="panel">${table(['Course','Document','Date','Status',''],audits.slice(0,70).map(a=>`<tr><td>${esc(a.course_code||'-')}</td><td>${esc(a.filename)}${a.rerun_of_id?`<br/><small>Rerun of audit #${a.rerun_of_id}</small>`:''}</td><td>${prettyDate(a.completed_at||a.created_at)}</td><td>${pill(compliance(a))}</td><td>${reportActions(a)}</td></tr>`))}</div>`;
 }
 async function renderSettings(){let runtime=await api('/api/runtime');const inst=S.institutions||[];
  let users=isAdmin()?await api('/api/users'):[],activity=isAdmin()?await api('/api/activity'):[];
@@ -142,7 +236,7 @@ async function renderSettings(){let runtime=await api('/api/runtime');const inst
  (isAdmin()?`<div class="section-bar"><h2>Accounts</h2>${aButton('Add account','user-add')}</div><div class="panel">${table(['Username','Role','Created'],users.map(u=>`<tr><td>${esc(u.username)}</td><td>${pill(u.role)}</td><td>${prettyDate(u.created_at)}</td></tr>`))}</div><div class="section-bar"><h2>Recent activity</h2></div><div class="panel">${table(['Action','User','Detail','Time'],activity.slice(0,25).map(a=>`<tr><td>${esc(a.verb)}</td><td>${esc(a.username||'System')}</td><td>${esc(a.detail||a.target)}</td><td>${prettyDate(a.created_at)}</td></tr>`))}</div>`:'');
 }
 function instForm(existing){let i=existing||{};
- return modalHead(existing?'Edit institution':'Add institution')+`<form class="stack" id="${existing?'inst-update':'inst-create'}" ${existing?`data-id="${i.id}"`:''}>${input('name','Institution name',i.name||'','text','',true)}${input('short_name','Short name',i.short_name||'')}${input('academic_year','Default academic year',i.academic_year||'','text','e.g. 2026-2027')}${input('catalog_url','Official catalog homepage',i.catalog_url||'','url','HTTPS URL, used as a discovery starting point')}${input('allowed_hosts','Other approved official domains',i.allowed_hosts||'','text','Comma-separated, e.g. catalog.college.edu, policies.college.edu')}${input('catalog_url_pattern','Optional catalog URL pattern',i.catalog_url_pattern||'','text','Reserved for institution-specific source patterns')}${formFooter(existing?'Save institution':'Add institution')}</form>`;
+ return modalHead(existing?'Edit institution':'Add institution')+`<form class="stack" id="${existing?'inst-update':'inst-create'}" ${existing?`data-id="${i.id}"`:''}>${input('name','Institution name',i.name||'','text','',true)}${input('short_name','Short name',i.short_name||'')}${input('academic_year','Default academic year',i.academic_year||'','text','e.g. 2026-2027')}${input('catalog_url','Official catalog homepage',i.catalog_url||'','url','HTTPS URL, used as a discovery starting point')}${input('allowed_hosts','Other approved official domains',i.allowed_hosts||'','text','Paste a hostname or full HTTPS URL. The application saves only the domain; separate entries with commas.')}${input('catalog_url_pattern','Optional catalog URL pattern',i.catalog_url_pattern||'','text','Reserved for institution-specific source patterns')}${formFooter(existing?'Save institution':'Add institution')}</form>`;
 }
 function userAdd(){modal(modalHead('Create account')+`<form id="user-create" class="stack">${input('username','Username','','text','',true)}${input('password','Temporary password','','password','At least 12 characters',true)}${selectField('role','Permissions',[['reviewer','Reviewer'],['admin','Administrator']],'reviewer')}${formFooter('Create account')}</form>`)}
 async function loadPage(){clearInterval(S.poll);S.poll=null;S.route=decodeURIComponent(location.hash.replace(/^#\/?/,'')||'dashboard');if(!S.user)return;
@@ -164,13 +258,78 @@ document.addEventListener('click',async e=>{
  try{
   if(act==='modal-close'){closeModal();return}
   if(act==='logout'){await api('/api/logout',{method:'POST'});S.user=null;loginUI();return}
-  if(act==='go-check')return goto('check');if(act==='go-sources')return goto('sources');if(act==='go-audits')return goto('audits');
+  if(act==='open-new-audit'){closeModal();return goto('audit/'+id)}
+  if(act==='go-check')return goto('check');if(act==='go-sources')return goto('sources');if(act==='go-audits'){if($('modal')?.open)closeModal();return goto('audits')}
   if(act==='inst-add')return modal(instForm());if(act==='inst-edit')return modal(instForm(S.institutions.find(i=>i.id===id)));
   if(act==='template-add')return templateAdd();if(act==='template-edit')return templateEdit(id);
+  if(act==='template-delete'){
+    if(!isAdmin())throw Error('Administrator permission required');
+    const item=S.dataset.find(r=>r.id===id);if(!item)throw Error('Template not found');
+    return modal(modalHead('Delete syllabus template?')+`<p>Delete <strong>${esc(item.name)}</strong>?</p><div class="callout" style="margin-top:14px">The template file will be removed. Completed audit findings remain saved. Any policies linked only to this template will be disabled so they do not become institution-wide rules.</div><div class="form-footer">${aButton('Cancel','modal-close')}${aButton('Delete template','confirm-template-delete',`data-id="${id}"`,'danger')}</div>`);
+  }
+  if(act==='confirm-template-delete'){
+    const result=await api(`/api/templates/${id}`,{method:'DELETE'});closeModal();notify(`Template deleted${result.disabled_linked_policies?', '+result.disabled_linked_policies+' linked rule(s) disabled':''}`);return loadPage();
+  }
   if(act==='policy-add')return modal(policyForm());if(act==='policy-edit')return modal(policyForm(S.dataset.find(r=>r.id===id)));
+  if(act==='policy-delete'){
+    if(!isAdmin())throw Error('Administrator permission required');
+    const item=S.dataset.find(r=>r.id===id);if(!item)throw Error('Requirement not found');
+    return modal(modalHead('Delete required policy?')+`<p>Delete <strong>${esc(item.name)}</strong>?</p><div class="callout" style="margin-top:14px">Future checks will no longer enforce this requirement. Findings from completed audit reports will stay available.</div><div class="form-footer">${aButton('Cancel','modal-close')}${aButton('Delete policy','confirm-policy-delete',`data-id="${id}"`,'danger')}</div>`);
+  }
+  if(act==='confirm-policy-delete'){
+    await api(`/api/requirements/${id}`,{method:'DELETE'});closeModal();notify('Required policy deleted');return loadPage();
+  }
+  if(act==='catalog-import-start')return modal(catalogImportForm());
+  if(act==='catalog-browser-start')return modal(catalogBrowserCaptureForm());
+  if(act==='catalog-browser-use-myocc'){document.querySelector('#catalog-browser-upload input[name=seed_url]').value='https://colss-prod.ec.sunyocc.edu/Student/Courses';notify('MyOCC selected. Choose a subject and open the filtered course list.');return}
+  if(act==='catalog-browser-open-subject'){const cfg=S.institutions.find(i=>i.id===needInstitution())||{};const original=document.querySelector('#catalog-browser-upload input[name=seed_url]')?.value||cfg.catalog_url;const subject=document.querySelector('#catalog-capture-subject')?.value||'';const url=catalogSubjectUrl(original,subject);document.querySelector('#catalog-browser-upload input[name=seed_url]').value=url;window.open(url,'_blank','noopener');notify(subject?'Opened '+subject.toUpperCase()+' course catalog. Run the capture script on that page.':'Opened full course catalog.');return}
+  if(act==='catalog-record-clear'){S.catalogSubject='';S.catalogSearch='';return renderCatalog()}
+  if(act==='catalog-browser-copy'){const source=document.querySelector('#catalog-browser-upload input[name=seed_url]')?.value||'';const path=isMyOCC(source)?'/assets/ellucian_capture.js':'/assets/catalog_capture.js';const response=await fetch(path,{cache:'no-store'});if(!response.ok)throw new Error('Could not load the updated catalog capture script');const script=await response.text();await navigator.clipboard.writeText(script);notify('Updated capture script copied. Paste it into the official catalog tab Console.');return}
+  if(act==='catalog-import-view')return showCatalogImport(id);
+  if(act==='catalog-import-page')return showCatalogImport(id,Number(target.dataset.offset)||0,target.dataset.q||'');
+  if(act==='catalog-import-apply'){
+    const update=target.dataset.update==='true';
+    if(!confirm(update?'Apply all discovered changes to existing course records? Existing records will be versioned and marked unverified.':'Import all new courses with complete descriptions? Existing courses will remain unchanged.'))return;
+    const result=await api(`/api/catalog-imports/${id}/apply`,{method:'POST',body:{update_existing:update}});
+    notify(`Imported ${result.created} new course(s), updated ${result.updated}, skipped ${result.skipped}.`);closeModal();return loadPage();
+  }
   if(act==='course-add')return modal(courseForm());if(act==='course-edit')return modal(courseForm(S.dataset.find(r=>r.id===id)));
+  if(act==='course-delete'){
+    if(!isAdmin())throw Error('Administrator permission required');
+    const item=S.dataset.find(r=>r.id===id);if(!item)throw Error('Course record not found');
+    return modal(modalHead('Delete course record?')+`<p>Delete <strong>${esc(item.code)} · ${esc(item.title)}</strong> (${esc(item.academic_year||'Any year')})?</p><div class="callout" style="margin-top:14px">The course reference will be removed. Existing audit reports remain unchanged, but future or rerun audits cannot compare to this course until it is imported again.</div><div class="form-footer">${aButton('Cancel','modal-close')}${aButton('Delete course','confirm-course-delete',`data-id="${id}"`,'danger')}</div>`);
+  }
+  if(act==='confirm-course-delete'){
+    await api(`/api/courses/${id}`,{method:'DELETE'});closeModal();notify('Course record deleted');return loadPage();
+  }
+  if(act==='course-delete-all'){
+    if(!isAdmin())throw Error('Administrator permission required');
+    const count=Number(target.dataset.count);
+    const name=S.institutions.find(i=>i.id===needInstitution())?.name||'selected institution';
+    return modal(modalHead('Delete all course records?')+`<p>You're about to delete <strong>${count} course record(s)</strong> belonging to <strong>${esc(name)}</strong>.</p><div class="callout" style="margin-top:14px">This removes ALL saved course catalog references for this institution, including records outside the current subject filter. Other institutions, policies, templates and previous audit reports remain intact. This cannot be undone.</div><div class="form-footer">${aButton('Cancel','modal-close')}${aButton('Continue to final confirmation','course-delete-all-final',`data-count="${count}"`,'danger')}</div>`);
+  }
+  if(act==='course-delete-all-final'){
+    const count=Number(target.dataset.count);
+    return modal(modalHead('Final confirmation: delete all courses')+`<p>This is your second confirmation for deleting <strong>${count} course record(s)</strong>. Type <strong>DELETE ALL</strong> exactly to enable the final delete.</p><form id="course-delete-all-form" data-count="${count}" class="stack" style="margin-top:15px">${input('confirmation','Confirmation phrase','','text','Type DELETE ALL (uppercase)',true)}<div class="form-footer">${aButton('Cancel','modal-close')}<button class="btn danger" type="submit">Permanently delete all ${count} records</button></div></form>`);
+  }
   if(act==='user-add')return userAdd();if(act==='source-inspect')return sourceInspect(id);
   if(act==='open-audit')return goto('audit/'+id);
+  if(act==='rerun-audit'){
+    const result=await api(`/api/audits/${id}/rerun`,{method:'POST'});
+    notify(`New audit #${result.audit_id} queued from saved report #${id}`);
+    return watchJob(result.job_id);
+  }
+  if(act==='delete-audit'){
+    let a=S.detail?.audit?.id===id?S.detail.audit:S.dataset?.find(x=>x.id===id);
+    if(!a)a=(await api(`/api/audits/${id}`)).audit;
+    return modal(modalHead('Delete audit report?')+`<p><strong>${esc(a.filename)}</strong> · Audit #${id}</p><div class="callout">This permanently deletes this report, its findings and its saved syllabus copy. Other audits, including reruns, will remain available. This cannot be undone.</div><div class="form-footer">${aButton('Cancel','modal-close')}${aButton('Delete report permanently','confirm-delete-audit',`data-id="${id}"`,'danger')}</div>`);
+  }
+  if(act==='confirm-delete-audit'){
+    const result=await api(`/api/audits/${id}`,{method:'DELETE'});
+    closeModal();S.detail=null;S.selectedFinding=null;
+    notify(result.stored_file_removed?'Report and stored syllabus deleted':'Report deleted; saved syllabus file could not be removed. Check server storage.',result.stored_file_removed?'success':'error');
+    return goto('history');
+  }
   if(act==='show-finding'){S.selectedFinding=id;const f=S.detail.findings.find(x=>x.id===id);document.querySelectorAll('.issue-button').forEach(x=>x.classList.toggle('selected',Number(x.dataset.id)===id));$('inspector').innerHTML=inspector(f);focusLocation(f?.location);return}
   if(act==='accept-finding'||act==='dismiss-finding'){
    const key=act==='accept-finding'?'accepted':'dismissed';await api('/api/findings/'+id,{method:'PUT',body:{[key]:Number(target.dataset.value)===1,...(key==='accepted'?{dismissed:false}:{accepted:false})}});
@@ -196,6 +355,19 @@ document.addEventListener('click',async e=>{
   if(act==='reload')return loadPage();if(act==='restart')return location.reload();
  }catch(err){notify(err.message,'error')}
 });
+async function watchJob(jobID){
+ modal(modalHead('Rerunning syllabus checks')+`<div id="rerun-progress" class="stack"><p class="muted">Checking saved syllabus against current requirements...</p></div>`);
+ async function refresh(){
+  try{
+   let j=await api(`/api/jobs/${jobID}`),a=j.audits[0],finished=['complete','complete_with_errors','interrupted'].includes(j.job.status);
+   let box=$('rerun-progress');if(!box){clearInterval(S.poll);S.poll=null;return}
+   box.innerHTML=`<p>${pill(j.job.status)} · ${j.job.finished} of ${j.job.total} processed</p><div class="progress"><span style="width:${j.job.total?Math.round(j.job.finished/j.job.total*100):0}%"></span></div>`+
+   (finished?`<div class="form-footer">${a?aButton('Open new audit','open-new-audit',`data-id="${a.id}"`,'primary'):''}${aButton('All audit results','go-audits')}</div>`:'');
+   if(finished){clearInterval(S.poll);S.poll=null}
+  }catch(err){clearInterval(S.poll);S.poll=null;notify(err.message,'error')}
+ }
+ clearInterval(S.poll);S.poll=setInterval(refresh,900);await refresh();
+}
 async function download(url,filename){const response=await fetch(url,{credentials:'same-origin'});if(!response.ok){let msg='Download failed';try{msg=(await response.json()).detail||msg}catch{}throw Error(msg)}
  const blob=await response.blob(),a=document.createElement('a'),uri=URL.createObjectURL(blob);a.href=uri;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(uri),2000)}
 
@@ -239,6 +411,34 @@ document.addEventListener('submit',async e=>{
    const payload={...data,variants_json:(data.variants||'').split('\n').map(x=>x.trim()).filter(Boolean)};delete payload.variants;
    if(type==='policy-create')payload.institution_id=needInstitution();
    await api(type==='policy-create'?'/api/requirements':'/api/requirements/'+id,{method:type==='policy-create'?'POST':'PUT',body:payload});closeModal();notify('Requirement saved');return loadPage()}
+  if(type==='catalog-import-start'){
+    const myocc=data.provider==='myocc';
+    const codes=String(data.subject_code||'').split(/[,;]/).map(x=>x.trim().toUpperCase()).filter(Boolean);
+    if(!myocc&&codes.length>1)throw Error('Select one subject for an Acalog scan, or choose MyOCC for multiple subjects.');
+    if(myocc&&!isMyOCC(data.seed_url))throw Error('Select a MyOCC /Student/Courses URL for this provider.');
+    if(!myocc&&isMyOCC(data.seed_url))throw Error('Select MyOCC in Catalog source to scan Self-Service.');
+    const url=myocc?data.seed_url:catalogSubjectUrl(data.seed_url,codes[0]||'');
+    const result=await api('/api/catalog-imports',{method:'POST',body:{institution_id:needInstitution(),seed_url:url,subject_codes:myocc?codes.join(','):'',academic_year:data.academic_year,max_pages:Number(data.max_pages)}});
+    notify('Catalog scan started');return showCatalogImport(result.id);
+  }
+  if(type==='catalog-browser-upload'){
+    const file=form.querySelector('input[name=file]')?.files?.[0];
+    if(!file)throw Error('Select the downloaded catalog JSON file or saved HTML');
+    const fd=new FormData();fd.set('institution_id',needInstitution());
+    fd.set('academic_year',data.academic_year);fd.set('seed_url',data.seed_url);fd.set('file',file);
+    const result=await api('/api/catalog-imports/capture',{method:'POST',body:fd});
+    notify(`Captured ${result.courses_found} course records for review.`);
+    return showCatalogImport(result.id);
+  }
+  if(type==='catalog-import-search')return showCatalogImport(id,0,data.q||'');
+  if(type==='catalog-record-filter'){S.catalogSubject=(data.subject||'').toUpperCase();S.catalogSearch=data.query||'';return renderCatalog()}
+  if(type==='course-delete-all-form'){
+    if(!isAdmin())throw Error('Administrator permission required');
+    if(data.confirmation!=='DELETE ALL')throw Error('Type DELETE ALL exactly to confirm.');
+    const count=Number(form.dataset.count);
+    const result=await api('/api/courses/all',{method:'DELETE',body:{institution_id:needInstitution(),expected_count:count,confirmation:data.confirmation}});
+    closeModal();S.catalogSubject='';S.catalogSearch='';notify(`${result.deleted} course record(s) permanently deleted`);return loadPage();
+  }
   if(type==='course-create'||type==='course-update'){
    let payload={...data};if(type==='course-create')payload.institution_id=needInstitution();
    await api(type==='course-create'?'/api/courses':'/api/courses/'+id,{method:type==='course-create'?'POST':'PUT',body:payload});closeModal();notify('Course reference saved');return loadPage()}
@@ -253,7 +453,13 @@ document.addEventListener('submit',async e=>{
  finally{if(btn)btn.disabled=false}
 });
 document.addEventListener('change',async e=>{
- if(e.target?.id==='institution-switch'){S.inst=Number(e.target.value);await loadPage()}
+ if(e.target?.id==='f-provider' && e.target.closest('#catalog-import-start')){
+   const cfg=S.institutions.find(i=>i.id===needInstitution())||{};
+   const seed=document.querySelector('#catalog-import-start input[name=seed_url]');
+   seed.value=e.target.value==='myocc'?MYOCC_URL:acalogFallbackUrl(cfg);
+ }
+ if(e.target?.id==='institution-switch'){S.inst=Number(e.target.value);S.catalogSubject='';S.catalogSearch='';await loadPage()}
+ if(e.target?.id==='catalog-subject-filter'){S.catalogSubject=e.target.value;S.catalogSearch=document.querySelector('#catalog-record-filter input[name=query]')?.value||'';await renderCatalog()}
  if(e.target?.name==='institution_id'&&S.route==='check'){S.inst=Number(e.target.value);await loadPage()}
 });
 window.addEventListener('hashchange',()=>{if(S.user){closeModal();loadPage()}});

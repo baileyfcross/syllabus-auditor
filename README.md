@@ -98,3 +98,67 @@ node --check app/static/app.js
 ```
 
 Tests cover authentication, required policies, matching, uploads, export and source URL validation, but do not validate end-to-end quantized model inference or official website availability.
+
+## Bulk course catalog import (additional feature)
+
+Administrators can open **Course Catalog → Bulk Import Catalog**, set the official course-listing URL and academic year, and start a bounded scan (100, 350, or 650 pages). The scanner follows relevant linked course pages on **approved HTTPS domains** only; it retrieves course codes, titles, descriptions, credits, prerequisites, and source URLs where available. It runs in a background worker, and previous scans can be reopened from the Course Catalog page.
+
+Before creating any catalog records, the application shows a preview of discovered entries and categorizes them as new, changed, unchanged, or incomplete. **Import new courses** adds complete new entries without touching existing courses. **Import and update existing** explicitly updates differences, increases record versions, and records the revision in the activity log. No scan silently overwrites existing approved records. Scanned descriptions stay **unverified** until a separate official source verification succeeds.
+
+### Coverage and source limitations
+
+* A bulk scan cannot promise to retrieve every course on every website. Many college catalog sites use paginated or JavaScript-only listings, require sessions, prevent automated access, or contain course data outside normal HTML text. The result shows discovered records and total pages scanned; if the page/course limits are reached, it is marked **truncated**. Incomplete course entries remain visible in the preview but are skipped at import time.
+* For a landing page that links to a separate catalog website, add that destination host to **Settings → Institution → Other approved official domains**, or configure the direct catalog URL as the official catalog homepage. Avoid broad or unrelated approved domains. Off-domain links are never crawled without explicit administrator authorization.
+* A returned 403 or other source error is reported. The scanner does not bypass website access restrictions, authentication, or CAPTCHA.
+* If the institution provides a downloadable official catalog rather than crawlable course pages, use an institution-authorized catalog export/source URL. The current bulk scanner reads HTTPS HTML and text/PDF fetched by the existing source subsystem. It does **not** guarantee robust extraction from every PDF layout and does not support uploading a local catalog file in this patch.
+* Use a direct **course listing** page when possible, rather than a degree program page or general college homepage. Run one catalog year per import; prior years are preserved independently.
+
+
+### Acalog subject-specific catalog import (OCC CIS / CSC / MATH)
+
+On **Course Catalog -> Browser Capture Import**, enter a subject prefix, such as
+`CIS`, and select **Open filtered course list**. The application builds the
+Acalog filter URL using the institution's catalog ID and opens the selected
+subject with `filter[32]=1` for visible descriptions. Run **Copy capture script**
+in the official catalog browser tab's Developer Console. When the JSON file
+downloads, upload it to the same import form and review its contents.
+
+The importer accepts both `catoid` (course detail / plain listing) and
+`cur_cat_oid` (filtered listing) formats, rejects mismatched catalog years,
+and restricts a filtered import to the selected subject.
+
+The **Bulk Import Catalog** form also accepts a subject prefix, but OCC may
+reject direct automated requests. Use Browser Capture Import if so.
+
+On the main **Course Catalog** page, select a subject in the **Subject code**
+dropdown to display just its saved records. You can also search by course
+code, title, or description. Filtering does not modify the database.
+
+See `SUBJECT_FILTER_PATCH_README.txt` for full instructions and limitations.
+
+## MyOCC Self-Service bulk catalog import
+
+The **Course Catalog > Bulk Import Catalog** interface now supports the public
+MyOCC Self-Service course search in addition to Acalog. Select **MyOCC
+Self-Service (browser-driven)**, use
+`https://colss-prod.ec.sunyocc.edu/Student/Courses`, and enter a subject such
+as `CIS` or multiple comma-separated subjects such as `CIS,CSC,MATH`.
+Leaving subjects blank attempts to discover subjects from the public course
+search, but some installations may not expose that list.
+
+The MyOCC domain must be included in the institution's **approved official
+domains**. On Windows the local browser scan prefers installed Edge, then
+Chrome; a bundled Chromium installation can be added with
+`python -m playwright install chromium`. In Docker the browser is installed
+into the image at build time. No Ollama, outside AI APIs, or third-party
+account is used.
+
+MyOCC pages load results dynamically. Some course pages, descriptions, or
+pagination controls may be inaccessible to automated browsing. The scanner
+reports errors and partial coverage. Scanned records are held in the existing
+**review and import** queue; they are not approved or marked verified.
+The selected academic year is a *storage label* for MyOCC records and does not
+prove that MyOCC supplied an official archived catalog for that year. The
+academic catalog remains the source of record for compliance verification.
+
+See `MYOCC_BULK_IMPORT_PATCH_README.txt` for installation and usage details.

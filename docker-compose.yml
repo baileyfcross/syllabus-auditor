@@ -12,6 +12,7 @@ services:
       SA_PUBLIC_BASE_URL: "https://syllabi.baileyfcross.info"
       SA_MONITOR_INTERVAL_HOURS: "24"
     mem_limit: 8g
+    shm_size: "1gb"
     security_opt:
       - no-new-privileges:true
     read_only: true

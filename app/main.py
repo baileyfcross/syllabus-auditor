@@ -12,7 +12,8 @@ from .config import ROOT, DATA_DIR,UPLOAD_DIR,MAX_UPLOAD,SESSION_DAYS,MODEL_PATH
 from .database import initialize,one,all_rows,execute,transaction,now,record_revision,log
 from .documents import validate_upload,extract,template_sections,infer_course_code,correct_docx
 from .validation import audit_document
-from .sources import check_target,discover_course,refresh_institution
+from .sources import check_target,discover_course,refresh_institution,normalize_allowed_hosts
+from .catalog_bulk import scan_catalog,apply_import,create_browser_capture_import,MAX_PAGES,_self_service
 from .reports import load,pdf_report,docx_report,csv_report,batch_zip
 from .ai import ai
 
@@ -236,8 +237,11 @@ async def create_institution(request:Request,user=Depends(admin)):
     if not name or len(name)>180:fail('Institution name is required')
     url=str(body.get('catalog_url','')).strip()
     if url and not url.startswith('https://'):fail('Catalog URL must use HTTPS')
+    try: hosts=normalize_allowed_hosts(body.get('allowed_hosts',''))
+    except ValueError as exc:fail(str(exc))
+    if len(hosts)>500:fail('Approved domains list is too long')
     ident=execute('''INSERT INTO institutions(name,short_name,catalog_url,catalog_url_pattern,allowed_hosts,academic_year,created_at) VALUES(?,?,?,?,?,?,?)''',
-        (name,str(body.get('short_name',''))[:60],url,str(body.get('catalog_url_pattern',''))[:1000],str(body.get('allowed_hosts',''))[:500],str(body.get('academic_year',''))[:30],now()))
+        (name,str(body.get('short_name',''))[:60],url,str(body.get('catalog_url_pattern',''))[:1000],hosts,str(body.get('academic_year',''))[:30],now()))
     log(user['id'],'institution.create',str(ident));return {'id':ident}
 @app.put('/api/institutions/{ident}')
 async def update_institution(ident:int,request:Request,user=Depends(admin)):
@@ -246,6 +250,10 @@ async def update_institution(ident:int,request:Request,user=Depends(admin)):
     values=pick(body,allowed)
     if 'catalog_url' in values and values['catalog_url'] and not str(values['catalog_url']).startswith('https://'):fail('Only HTTPS catalog URLs are supported')
     if 'name' in values and not str(values['name']).strip():fail('Name required')
+    if 'allowed_hosts' in values:
+        try: values['allowed_hosts']=normalize_allowed_hosts(values['allowed_hosts'])
+        except ValueError as exc:fail(str(exc))
+        if len(values['allowed_hosts'])>500:fail('Approved domains list is too long')
     if not values:fail('No changes supplied')
     with transaction() as db:db.execute('UPDATE institutions SET '+','.join(f'{k}=?' for k in values)+' WHERE id=?',(*values.values(),ident))
     record_revision('institution',ident,old,values,user['id']);return {'ok':True}
@@ -281,6 +289,33 @@ async def update_template(ident:int,request:Request,user=Depends(admin)):
     values['version']=old['version']+1
     with transaction() as db:db.execute('UPDATE templates SET '+','.join(f'{k}=?' for k in values)+' WHERE id=?',(*values.values(),ident))
     record_revision('template',ident,old,values,user['id']);return {'ok':True,'version':values['version']}
+@app.delete('/api/templates/{ident}')
+def delete_template(ident:int,user=Depends(admin)):
+    """Remove a template without changing the saved findings of earlier audits."""
+    old=assert_template(ident)
+    busy=one("""SELECT id FROM audit_jobs WHERE template_id=? AND status IN ('queued','running') LIMIT 1""",(ident,))
+    if not busy:
+        busy=one("""SELECT id FROM audits WHERE template_id=? AND status IN ('queued','running') LIMIT 1""",(ident,))
+    if busy:fail('Template is in use by an active audit. Wait for that audit to finish.',409)
+    assigned=one('SELECT COUNT(*) AS total FROM requirements WHERE template_id=?',(ident,))['total']
+    with transaction() as db:
+        # A deleted template must not cause scoped policies to become global rules.
+        db.execute('UPDATE requirements SET template_id=NULL,active=0,updated_at=? WHERE template_id=?',(now(),ident))
+        # Audit reports keep their stored findings; missing template references become NULL.
+        db.execute('UPDATE audit_jobs SET template_id=NULL WHERE template_id=?',(ident,))
+        db.execute('UPDATE audits SET template_id=NULL WHERE template_id=?',(ident,))
+        db.execute('DELETE FROM templates WHERE id=?',(ident,))
+    # Only delete generated uploads inside the application-managed upload directory.
+    storage=Path(old['doc_path']) if old['doc_path'] else None
+    removed=False
+    if storage and storage.is_absolute() and storage.resolve().is_relative_to(UPLOAD_DIR.resolve()):
+        if not one('SELECT id FROM templates WHERE doc_path=? LIMIT 1',(str(storage),)):
+            try: storage.unlink(missing_ok=True);removed=True
+            except OSError:pass
+    record_revision('template.delete',ident,old,{'deleted':True,'assigned_policies_disabled':assigned},user['id'])
+    log(user['id'],'template.delete',str(ident),f'{old["name"]}; linked policies disabled: {assigned}')
+    return {'ok':True,'disabled_linked_policies':assigned,'stored_file_removed':removed}
+
 @app.get('/api/templates/{ident}/file')
 def template_file(ident:int,user=Depends(current_user)):
     row=assert_template(ident);p=Path(row['doc_path'])
@@ -327,6 +362,100 @@ async def update_requirement(ident:int,request:Request,user=Depends(admin)):
     with transaction() as db:db.execute('UPDATE requirements SET '+','.join(f'{k}=?' for k in values)+' WHERE id=?',(*values.values(),ident))
     record_revision('requirement',ident,old,values,user['id']);return {'ok':True}
 
+@app.delete('/api/requirements/{ident}')
+def delete_requirement(ident:int,user=Depends(admin)):
+    old=one('SELECT * FROM requirements WHERE id=?',(ident,))
+    if not old:fail('Requirement not found',404)
+    # Existing findings store the comparison text and outcome independently.
+    with transaction() as db:
+        db.execute("DELETE FROM source_checks WHERE target_type='requirement' AND target_id=? AND institution_id=?",
+                   (ident,old['institution_id']))
+        db.execute('DELETE FROM requirements WHERE id=?',(ident,))
+    record_revision('requirement.delete',ident,old,{'deleted':True},user['id'])
+    log(user['id'],'requirement.delete',str(ident),old['name'])
+    return {'ok':True}
+
+@app.get('/api/catalog-imports')
+def catalog_imports(institution_id:int,user=Depends(current_user)):
+    assert_institution(institution_id)
+    return all_rows('SELECT id,institution_id,seed_url,subject_codes,academic_year,status,max_pages,pages_scanned,courses_found,truncated,error,created_at,finished_at FROM catalog_imports WHERE institution_id=? ORDER BY id DESC LIMIT 30',(institution_id,))
+
+@app.post('/api/catalog-imports')
+async def catalog_scan_start(request:Request,user=Depends(admin)):
+    body=await request.json()
+    inst=assert_institution(nint(body.get('institution_id')))
+    seed=str(body.get('seed_url') or inst['catalog_url'] or '').strip()
+    if not seed:fail('Configure the official catalog URL in institution settings first')
+    from .sources import validate_url
+    validate_url(seed,inst)
+    # MyOCC supports one or many public subject searches in a background batch.
+    # Non-MyOCC scans continue using their existing Acalog filter behavior.
+    subject_codes=''
+    if _self_service(seed):
+        raw=body.get('subject_codes') or ''
+        if isinstance(raw,list):raw=','.join(str(x) for x in raw)
+        codes=[c.strip().upper() for c in str(raw).replace(';',',').split(',') if c.strip()]
+        if len(codes)>150 or any(not re.fullmatch(r'[A-Z]{2,6}',c) for c in codes):
+            fail('Use up to 150 subject codes, such as CIS,CSC,MATH')
+        subject_codes=','.join(dict.fromkeys(codes))
+    academic_year=str(body.get('academic_year') or inst['academic_year'] or '').strip()[:30]
+    if not academic_year:fail('Choose a catalog academic year before scanning')
+    try:max_pages=int(body.get('max_pages') or 1000)
+    except (ValueError,TypeError):fail('Invalid page limit')
+    if max_pages<1 or max_pages>MAX_PAGES:fail(f'Page limit must be between 1 and {MAX_PAGES}')
+    running=one('SELECT id FROM catalog_imports WHERE institution_id=? AND status="running"',(inst['id'],))
+    if running:fail(f'A catalog scan is already running (#{running["id"]})',409)
+    ident=execute('INSERT INTO catalog_imports(institution_id,created_by,seed_url,subject_codes,academic_year,max_pages,created_at) VALUES(?,?,?,?,?,?,?)',
+                  (inst['id'],user['id'],seed,subject_codes,academic_year,max_pages,now()))
+    executor.submit(scan_catalog,ident,inst)
+    log(user['id'],'catalog.scan.start',str(ident))
+    return {'id':ident,'status':'running'}
+
+@app.post('/api/catalog-imports/capture')
+async def catalog_browser_capture(institution_id:int=Form(...), academic_year:str=Form(...),
+                                  seed_url:str=Form(...),file:UploadFile=File(...),
+                                  user=Depends(admin)):
+    inst=assert_institution(institution_id)
+    name=(file.filename or '').lower()
+    if not name.endswith(('.json','.html','.htm')):
+        fail('Select a catalog .json capture or saved .html page')
+    blob=await file.read(20_000_001)
+    if len(blob)>20_000_000:fail('Catalog capture exceeds 20 MB')
+    result=await asyncio.to_thread(create_browser_capture_import,inst,user['id'],academic_year,seed_url,blob,name)
+    log(user['id'],'catalog.capture.import',str(result['id']))
+    return result
+
+@app.get('/api/catalog-imports/{ident}')
+def catalog_scan_status(ident:int,user=Depends(current_user)):
+    job=one('SELECT * FROM catalog_imports WHERE id=?',(ident,))
+    if not job:fail('Catalog scan not found',404)
+    counts=all_rows('SELECT status,COUNT(*) count FROM catalog_import_items WHERE import_id=? GROUP BY status',(ident,))
+    job['counts']={r['status']:r['count'] for r in counts}
+    try:job['errors']=json.loads(job.pop('errors_json') or '[]')
+    except ValueError:job['errors']=[]
+    return job
+
+@app.get('/api/catalog-imports/{ident}/items')
+def catalog_scan_items(ident:int,offset:int=0,limit:int=100,q:str='',user=Depends(current_user)):
+    if not one('SELECT id FROM catalog_imports WHERE id=?',(ident,)):fail('Catalog scan not found',404)
+    if offset<0 or not 1<=limit<=200:fail('Invalid paging parameters')
+    q=q.strip().upper()[:60]
+    params=[ident];where='import_id=?'
+    if q:
+        where+=' AND (code LIKE ? OR UPPER(title) LIKE ?)'
+        params.extend(['%'+q+'%','%'+q+'%'])
+    total=one(f'SELECT COUNT(*) total FROM catalog_import_items WHERE {where}',params)['total']
+    rows=all_rows(f'SELECT id,code,title,description,credits,prerequisites,source_url,status FROM catalog_import_items WHERE {where} ORDER BY code LIMIT ? OFFSET ?',(*params,limit,offset))
+    return {'total':total,'items':rows,'offset':offset,'limit':limit}
+
+@app.post('/api/catalog-imports/{ident}/apply')
+async def catalog_scan_apply(ident:int,request:Request,user=Depends(admin)):
+    job=one('SELECT id FROM catalog_imports WHERE id=?',(ident,))
+    if not job:fail('Catalog scan not found',404)
+    body=await request.json()
+    if not isinstance(body.get('update_existing',False),bool):fail('Invalid update_existing value')
+    return await asyncio.to_thread(apply_import,ident,user['id'],body.get('update_existing',False))
+
 COURSE_FIELDS=['code','title','description','credits','prerequisites','academic_year','source_url']
 @app.get('/api/courses')
 def courses(institution_id:int,user=Depends(current_user)):
@@ -352,6 +481,39 @@ async def update_course(ident:int,request:Request,user=Depends(admin)):
     values['version']=old['version']+1
     with transaction() as db:db.execute('UPDATE courses SET '+','.join(f'{k}=?' for k in values)+' WHERE id=?',(*values.values(),ident))
     record_revision('course',ident,old,values,user['id']);return {'ok':True}
+
+@app.delete('/api/courses/all')
+async def delete_all_courses(request:Request,user=Depends(admin)):
+    """Destructive institution-scoped purge with explicit phrase and count check."""
+    body=await request.json()
+    institution_id=nint(body.get('institution_id'),'institution ID')
+    assert_institution(institution_id)
+    if body.get('confirmation')!='DELETE ALL':fail('Enter DELETE ALL to confirm removal.',400)
+    try: expected_count=int(body.get('expected_count'))
+    except (TypeError,ValueError):fail('Record count must be confirmed.',400)
+    if expected_count<0:fail('Invalid record count.',400)
+    with transaction() as db:
+        running=db.execute("""SELECT id FROM catalog_imports WHERE institution_id=? AND status='running' LIMIT 1""",(institution_id,)).fetchone()
+        if running:fail('A catalog import is still running. Wait for it to finish before deleting course records.',409)
+        actual=db.execute('SELECT COUNT(*) FROM courses WHERE institution_id=?',(institution_id,)).fetchone()[0]
+        if actual!=expected_count:
+            fail(f'Course count changed from {expected_count} to {actual}. Refresh and review before deleting.',409)
+        db.execute("DELETE FROM source_checks WHERE institution_id=? AND target_type='course'",(institution_id,))
+        db.execute('DELETE FROM courses WHERE institution_id=?',(institution_id,))
+    log(user['id'],'courses.delete_all',str(institution_id),f'{actual} course record(s) removed')
+    return {'ok':True,'deleted':actual,'institution_id':institution_id}
+
+@app.delete('/api/courses/{ident}')
+def delete_course(ident:int,user=Depends(admin)):
+    old=one('SELECT * FROM courses WHERE id=?',(ident,))
+    if not old:fail('Course not found',404)
+    with transaction() as db:
+        db.execute("DELETE FROM source_checks WHERE institution_id=? AND target_type='course' AND target_id=?",
+                   (old['institution_id'],ident))
+        db.execute('DELETE FROM courses WHERE id=?',(ident,))
+    record_revision('course.delete',ident,old,{'deleted':True},user['id'])
+    log(user['id'],'course.delete',str(ident),old['code'])
+    return {'ok':True}
 
 @app.get('/api/source-checks')
 def source_checks(institution_id:Optional[int]=None,user=Depends(current_user)):
@@ -439,6 +601,95 @@ def retry_job(ident:int,user=Depends(current_user)):
         for row in failures:db.execute('UPDATE audits SET status="queued",error="" WHERE id=?',(row['id'],))
     executor.submit(run_job,ident)
     return {'ok':True}
+def _may_manage_audit(audit, user):
+    """Only the report owner or an administrator may mutate a saved audit."""
+    if audit['created_by']!=user['id'] and user['role']!='admin':
+        fail('Only the report owner or an administrator can change this report',403)
+
+
+def _saved_document_path(audit):
+    """Refuse to open arbitrary database-backed paths outside protected uploads."""
+    path=Path(audit['storage_path']).resolve()
+    if not path.is_relative_to(UPLOAD_DIR.resolve()):
+        fail('Saved syllabus path is outside application storage',409)
+    return path
+
+
+@app.post('/api/audits/{ident}/rerun')
+def rerun_audit(ident:int,user=Depends(current_user)):
+    """Create a separate audit/job from a saved original, using current rules and references."""
+    original=one('SELECT * FROM audits WHERE id=?',(ident,))
+    if not original:fail('Audit not found',404)
+    _may_manage_audit(original,user)
+    if original['status'] not in ('complete','error','interrupted'):
+        fail('Wait for the current syllabus check to finish before rerunning',409)
+    source=_saved_document_path(original)
+    if not source.is_file():fail('Original syllabus is no longer stored. Upload it again to rerun checks.',409)
+    destination=UPLOAD_DIR/(secrets.token_hex(20)+original['filetype'])
+    # Each rerun keeps its own document copy, allowing either report to be deleted independently.
+    try:
+        shutil.copyfile(source,destination)
+        with transaction() as db:
+            cur=db.execute("""INSERT INTO audit_jobs(institution_id,template_id,academic_year,created_by,created_at,total)
+                              VALUES(?,?,?,?,?,1)""",
+                (original['institution_id'],original['template_id'],original['academic_year'],user['id'],now()))
+            job_id=cur.lastrowid
+            cur=db.execute("""INSERT INTO audits(job_id,rerun_of_id,institution_id,template_id,filename,
+                              storage_path,filetype,academic_year,created_at,created_by)
+                              VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (job_id,original['id'],original['institution_id'],original['template_id'],
+                 original['filename'],str(destination),original['filetype'],original['academic_year'],now(),user['id']))
+            new_id=cur.lastrowid
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    executor.submit(run_job,job_id)
+    log(user['id'],'audit.rerun',str(new_id),f'from #{ident}')
+    return {'ok':True,'job_id':job_id,'audit_id':new_id,'rerun_of_id':ident,'status':'queued'}
+
+
+@app.delete('/api/audits/{ident}')
+def delete_audit(ident:int,user=Depends(current_user)):
+    """Delete one finished report, its findings and its private saved source file."""
+    audit=one('SELECT * FROM audits WHERE id=?',(ident,))
+    if not audit:fail('Audit not found',404)
+    _may_manage_audit(audit,user)
+    if audit['status'] in ('queued','running'):
+        fail('Cannot delete a report while its check is running',409)
+    job=one('SELECT status FROM audit_jobs WHERE id=?',(audit['job_id'],)) if audit['job_id'] else None
+    if job and job['status'] in ('queued','running'):
+        fail('Cannot delete reports from a batch that is still running',409)
+    source=_saved_document_path(audit)
+    shared=one('SELECT id FROM audits WHERE storage_path=? AND id!=? LIMIT 1',(audit['storage_path'],ident))
+    # Renaming first avoids reporting success when Windows is unable to release an open file.
+    staged=None
+    if source.exists() and not shared:
+        if not source.is_file():fail('Stored document is not a regular file',409)
+        staged=UPLOAD_DIR/('.deleting-'+secrets.token_hex(16))
+        try:source.rename(staged)
+        except OSError:fail('Unable to remove stored syllabus. Close open downloads and try again.',409)
+    try:
+        with transaction() as db:
+            db.execute('DELETE FROM audits WHERE id=?',(ident,))
+            if audit['job_id']:
+                count=db.execute('SELECT COUNT(*) FROM audits WHERE job_id=?',(audit['job_id'],)).fetchone()[0]
+                if count==0:
+                    db.execute('DELETE FROM audit_jobs WHERE id=?',(audit['job_id'],))
+                else:
+                    problems=db.execute('SELECT COUNT(*) FROM audits WHERE job_id=? AND status IN ("error","interrupted")',(audit['job_id'],)).fetchone()[0]
+                    db.execute('UPDATE audit_jobs SET total=?,finished=?,status=? WHERE id=?',
+                        (count,count,'complete_with_errors' if problems else 'complete',audit['job_id']))
+    except Exception:
+        if staged and staged.exists():staged.rename(source)
+        raise
+    file_removed=True
+    if staged:
+        try:staged.unlink()
+        except OSError:file_removed=False
+    log(user['id'],'audit.delete',str(ident),'Report and stored syllabus deletion requested')
+    return {'ok':True,'deleted_audit_id':ident,'stored_file_removed':file_removed}
+
+
 @app.get('/api/audits')
 def audits(institution_id:Optional[int]=None,limit:int=200,user=Depends(current_user)):
     limit=max(1,min(500,limit))
@@ -500,7 +751,8 @@ def corrected_docx(ident:int,user=Depends(current_user)):
 def compare_audit(ident:int,user=Depends(current_user)):
     a=one('SELECT * FROM audits WHERE id=?',(ident,))
     if not a:fail('Audit not found',404)
-    old=one('SELECT id FROM audits WHERE id<? AND institution_id=? AND course_code=? AND course_code!="" ORDER BY id DESC LIMIT 1',(ident,a['institution_id'],a['course_code']))
+    old=(one('SELECT id FROM audits WHERE id=?',(a['rerun_of_id'],)) if a.get('rerun_of_id') else None)
+    if not old:old=one('SELECT id FROM audits WHERE id<? AND institution_id=? AND course_code=? AND course_code!="" ORDER BY id DESC LIMIT 1',(ident,a['institution_id'],a['course_code']))
     previous=all_rows('SELECT code,status,title FROM findings WHERE audit_id=?',(old['id'],)) if old else []
     latest=all_rows('SELECT code,status,title FROM findings WHERE audit_id=?',(ident,))
     by_code={r['code']:r for r in previous}

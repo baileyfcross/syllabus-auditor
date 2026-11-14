@@ -8,16 +8,65 @@ from .database import one, all_rows, execute, now
 
 MAX_SOURCE_BYTES=3_000_000
 
+def _approved_host(value):
+    """Accept a hostname or full HTTPS source URL; persist only its hostname.
+
+    This keeps the existing comma-separated `allowed_hosts` database field and
+    prevents a pasted URL's path, query or fragment from broadening permissions.
+    """
+    entry = str(value or '').strip()
+    if not entry:
+        return ''
+    if '://' in entry:
+        try:
+            parsed = urllib.parse.urlsplit(entry)
+            if (parsed.scheme.lower() != 'https' or not parsed.hostname or
+                parsed.username is not None or parsed.password is not None or
+                parsed.port not in (None, 443)):
+                raise ValueError()
+            host = parsed.hostname.lower()
+        except ValueError as exc:
+            raise ValueError(f'Approved domain must be an HTTPS URL or hostname: {entry}') from exc
+    else:
+        # A trailing slash after a bare host is harmless, but paths without
+        # a URL scheme are ambiguous and should be rejected.
+        host = entry.lower().rstrip('/')
+        if '/' in host or '?' in host or '#' in host or ':' in host:
+            raise ValueError(f'Approved domain must be a hostname or full HTTPS URL: {entry}')
+    labels = host.split('.')
+    if (len(host) > 253 or len(labels) < 2 or
+        any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', part) for part in labels)):
+        raise ValueError(f'Invalid approved domain: {entry}')
+    return host
+
+
+def normalize_allowed_hosts(raw):
+    """Normalize full HTTPS links and legacy hostname entries to hostnames."""
+    cleaned=[]
+    for entry in str(raw or '').replace(';', ',').split(','):
+        host=_approved_host(entry)
+        if host and host not in cleaned:
+            cleaned.append(host)
+    return ', '.join(cleaned)
+
+
 def _allowed_hosts(institution):
     out=set()
-    for u in [institution.get('catalog_url','')]:
+    url=institution.get('catalog_url','')
+    if url:
         try:
-            hostname=urllib.parse.urlsplit(u).hostname
-            if hostname: out.add(hostname.lower())
-        except ValueError: pass
-    for h in (institution.get('allowed_hosts','') or '').replace(';',',').split(','):
-        h=h.strip().lower()
-        if h and re.fullmatch(r'[a-z0-9.-]+',h): out.add(h)
+            parsed=urllib.parse.urlsplit(url)
+            if parsed.scheme=='https' and parsed.hostname:
+                out.add(parsed.hostname.lower())
+        except ValueError:
+            pass
+    # Accept old stored settings as well as the new normalized hostname data.
+    for entry in str(institution.get('allowed_hosts','') or '').replace(';',',').split(','):
+        try:
+            host=_approved_host(entry)
+            if host: out.add(host)
+        except ValueError:
+            continue
     return out
 
 def validate_url(url,institution):
@@ -69,16 +118,32 @@ def fetch_source(url,institution):
         soup=BeautifulSoup(data,'html.parser')
         # Discover navigation links *before* stripping boilerplate from the text.
         links=[]
-        for a in soup.find_all('a',href=True)[:500]:
-            href=urllib.parse.urljoin(url,a['href']).split('#')[0]
-            if href.startswith('https://'):
-                links.append({'url':href,'label':a.get_text(' ',strip=True)[:120]})
+        for a in soup.find_all('a')[:12000]:
+            # Acalog's course preview is usually a normal href, but some
+            # installations expose the destination only in onclick/rel.
+            candidates = [a.get('href', '')]
+            for attribute in ('onclick', 'rel', 'data-url'):
+                value = a.get(attribute, '')
+                if isinstance(value, list): value = ' '.join(value)
+                if 'preview_course' in value:
+                    candidates += re.findall(
+                        r'((?:/?(?:ajax/)?)?preview_course(?:_nopop)?\.php\?[^\s\"\'<>]+)',
+                        value, re.I)
+            for candidate in candidates:
+                if not candidate or candidate.lower().startswith(('javascript:', 'mailto:', '#')):
+                    continue
+                # Never follow HTTP, even if the catalog offers it.
+                href = urllib.parse.urljoin(url,html.unescape(candidate)).split('#')[0]
+                if href.startswith('https://'):
+                    links.append({'url':href,'label':a.get_text(' ',strip=True)[:160]})
+
         for bad in soup(['script','style','nav','footer','header','noscript']):bad.decompose()
         main=soup.find('main') or soup.find('article') or soup.body or soup
         text=main.get_text('\n',strip=True)[:100_000]
     else:
         text=data.decode('utf-8','replace')[:100_000];links=[]
-    return {'url':url,'text':text,'links':links,'content_type':content_type}
+    return {'url':url,'text':text,'links':links,'content_type':content_type,
+            'html':data.decode('utf-8','replace')[:MAX_SOURCE_BYTES] if 'html' in content_type or b'<html' in data[:500].lower() else ''}
 
 def _context(text,needle,limit=1700):
     if not needle: return text[:limit]

@@ -110,6 +110,94 @@ def _check_text(name,expected,mode,blocks,severity,category,req_id=None,variants
         reason='Expected wording was not found verbatim. Similar passage detected.' if status=='warning' else 'Located section does not contain required approved wording.'
     return _finding(name,name,category,status,severity,expected,observed,loc,reason,source_url,confidence,requirement_id=req_id)
 
+def _check_course_title(expected, blocks, source_url='', course=None):
+    """Match the *catalog value* against title-bearing syllabus text, not the label.
+
+    "Course title" is a field name and must never be used as a semantic search
+    target. In particular, a later heading such as "Course Materials and Support"
+    is not evidence of the syllabus title. Exact title recognition is deterministic;
+    nearby, possibly misspelled values are sent for human review only.
+    """
+    value = str(expected or '').strip()
+    if not value or letters(value) in ('title','course title','course name'):
+        return _finding('catalog_title', 'Course title', 'catalog', 'review', 'warning',
+                        reason='No approved catalog course title is configured.', url=source_url)
+
+    # A printed title may be a heading, a line in a table, or a label/value pair.
+    label = re.compile(r'^\s*(?:(?:official\s+)?course\s+(?:title|name)|title)\s*[:\-|]\s*', re.I)
+    compact_expected = letters(value)
+    candidates = []
+    mismatched = []
+    for i, block in enumerate(blocks[:60]):
+        original = str(block.get('text') or '').strip()
+        if not original:
+            continue
+        # Restrict location to the beginning of the syllabus, except for
+        # explicitly labeled title fields which can occur in a cover table.
+        lines = [line.strip() for line in original.replace(' | ', '\n').splitlines() if line.strip()]
+        for line in lines:
+            labeled = bool(label.match(line))
+            if i > 29 and not labeled:
+                continue
+            if len(line) > 250:
+                continue
+            cleaned = label.sub('', line).strip()
+            # Course codes can precede the actual title on the title page.
+            cleaned = re.sub(r'^\s*[A-Za-z]{2,6}\s*[-–:]?\s*\d{3,4}[A-Za-z]?\s*[:\-|]?\s*', '', cleaned).strip()
+            # A bare "Course Title" label is not a course title.
+            if not cleaned or letters(cleaned) in ('title', 'course title', 'course name'):
+                continue
+            # Do not classify ordinary descriptive sentences as a title.
+            looks_like_title = (labeled or len(cleaned) <= 140 and
+                (i < 20 or block.get('kind') == 'heading') and
+                not re.search(r'[.!?]\s*$', cleaned) and len(cleaned.split()) <= 17)
+            if not looks_like_title:
+                continue
+            text = letters(cleaned)
+            # Compare the *title* rather than scoring against the words "Course title".
+            if re.search(r'(?<![a-z0-9])' + re.escape(compact_expected) + r'(?![a-z0-9])', text):
+                candidates.append((1.0 if text == compact_expected else .98, i, block, line))
+            elif len(compact_expected) >= 8:
+                score = similarity(cleaned, value)
+                if score >= .89:
+                    candidates.append((score, i, block, line))
+                elif labeled and len(cleaned) > 3:
+                    mismatched.append((i, block, line))
+            elif labeled and len(cleaned) > 3:
+                mismatched.append((i, block, line))
+    # Label and value may be separate paragraphs or table lines.
+    for i, block in enumerate(blocks[:35]):
+        raw = str(block.get('text') or '').strip()
+        if re.fullmatch(r'(?i)(?:official\s+)?(?:course\s+)?(?:title|name)\s*[:\-]?', raw):
+            if i + 1 < len(blocks):
+                next_text = str(blocks[i+1].get('text') or '').strip()
+                if letters(next_text) == compact_expected:
+                    candidates.append((1., i+1, blocks[i+1], next_text))
+
+    if candidates:
+        score, _, block, found_text = sorted(candidates, key=lambda row:(row[0], -row[1]), reverse=True)[0]
+        if score >= .98:
+            result = 'passed'
+            explanation = 'The syllabus course title matches the selected catalog course title.'
+        else:
+            result = 'review'
+            explanation = 'A similar course title was located, but the wording differs from the catalog. Confirm the title manually.'
+        if result == 'passed' and course is not None and not course.get('last_verified_at'):
+            result = 'review'
+            explanation += ' The stored catalog reference has not been independently verified against its official source.'
+        return _finding('catalog_title','Course title','catalog',result,'warning',
+            value,found_text,block.get('location',''),explanation,source_url,score,
+            evidence={'catalog_course_code':(course or {}).get('code',''), 'catalog_academic_year':(course or {}).get('academic_year','')})
+    if mismatched:
+        _, block, text = mismatched[0]
+        return _finding('catalog_title','Course title','catalog','failed','warning',
+            value,text,block.get('location',''),
+            'An explicit title field was found, but its value differs from the selected catalog course title. Correct the mismatch or verify the source.',
+            source_url,.6)
+    return _finding('catalog_title','Course title','catalog','review','warning',
+        value,'','','The catalog course title was not located in a recognizable title field near the beginning of the syllabus. No unrelated section was substituted.',source_url)
+
+
 def audit_document(extracted,requirements,course=None,template=None,use_ai=True):
     blocks=extracted['blocks']; full=extracted['text']; findings=[]
     code=infer_course_code(full)
@@ -126,8 +214,12 @@ def audit_document(extracted,requirements,course=None,template=None,use_ai=True)
             value=course.get(key,'')
             if not value: continue
             mode='exact' if key=='description' else 'semantic' if key in ('title','prerequisites') else 'exact'
-            # Match the expected block, then compare. Description must stay verbatim.
-            finding=_check_text(label,value,mode,blocks,'critical' if key=='description' else 'warning','catalog',keywords=','.join(HEADINGS.get(key,[])),source_url=course.get('source_url',''),use_ai=use_ai)
+            # Course title is data from the selected catalog record, not a heading keyword.
+            # Other fields continue through the original rule engine.
+            if key=='title':
+                finding=_check_course_title(value,blocks,course.get('source_url',''),course)
+            else:
+                finding=_check_text(label,value,mode,blocks,'critical' if key=='description' else 'warning','catalog',keywords=','.join(HEADINGS.get(key,[])),source_url=course.get('source_url',''),use_ai=use_ai)
             finding['code']='catalog_'+key
             if key=='description' and not course.get('last_verified_at'):
                 if finding['status']=='passed': finding['status']='review'

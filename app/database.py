@@ -36,6 +36,19 @@ CREATE TABLE IF NOT EXISTS courses (
  source_url TEXT DEFAULT '', version INTEGER NOT NULL DEFAULT 1,
  last_verified_at TEXT DEFAULT '', created_at TEXT NOT NULL,
  UNIQUE(institution_id, code, academic_year));
+CREATE TABLE IF NOT EXISTS catalog_imports (
+ id INTEGER PRIMARY KEY, institution_id INTEGER NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+ created_by INTEGER NOT NULL REFERENCES users(id), seed_url TEXT NOT NULL, subject_codes TEXT DEFAULT '', academic_year TEXT DEFAULT '',
+ status TEXT NOT NULL DEFAULT 'running', max_pages INTEGER NOT NULL DEFAULT 350,
+ pages_scanned INTEGER NOT NULL DEFAULT 0, courses_found INTEGER NOT NULL DEFAULT 0,
+ truncated INTEGER NOT NULL DEFAULT 0, errors_json TEXT DEFAULT '[]', error TEXT DEFAULT '',
+ created_at TEXT NOT NULL, finished_at TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS catalog_import_items (
+ id INTEGER PRIMARY KEY, import_id INTEGER NOT NULL REFERENCES catalog_imports(id) ON DELETE CASCADE,
+ code TEXT NOT NULL, title TEXT DEFAULT '', description TEXT DEFAULT '', credits TEXT DEFAULT '',
+ prerequisites TEXT DEFAULT '', source_url TEXT DEFAULT '', evidence TEXT DEFAULT '', status TEXT DEFAULT '',
+ UNIQUE(import_id,code));
+CREATE INDEX IF NOT EXISTS idx_catalog_imports_inst ON catalog_imports(institution_id);
 CREATE TABLE IF NOT EXISTS source_checks (
  id INTEGER PRIMARY KEY, institution_id INTEGER NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
  target_type TEXT NOT NULL, target_id INTEGER NOT NULL, url TEXT NOT NULL,
@@ -49,6 +62,7 @@ CREATE TABLE IF NOT EXISTS audit_jobs (
  total INTEGER DEFAULT 0, finished INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS audits (
  id INTEGER PRIMARY KEY, job_id INTEGER REFERENCES audit_jobs(id) ON DELETE SET NULL,
+ rerun_of_id INTEGER REFERENCES audits(id) ON DELETE SET NULL,
  institution_id INTEGER NOT NULL REFERENCES institutions(id), template_id INTEGER REFERENCES templates(id),
  filename TEXT NOT NULL, storage_path TEXT NOT NULL, filetype TEXT NOT NULL,
  course_code TEXT DEFAULT '', academic_year TEXT DEFAULT '',
@@ -87,6 +101,11 @@ def connect():
 def initialize():
     with _db_lock, connect() as db:
         db.executescript(SCHEMA)
+        if 'rerun_of_id' not in {c[1] for c in db.execute('PRAGMA table_info(audits)').fetchall()}:
+            db.execute("ALTER TABLE audits ADD COLUMN rerun_of_id INTEGER REFERENCES audits(id) ON DELETE SET NULL")
+        if 'subject_codes' not in {c[1] for c in db.execute('PRAGMA table_info(catalog_imports)').fetchall()}:
+            db.execute("ALTER TABLE catalog_imports ADD COLUMN subject_codes TEXT DEFAULT ''")
+        db.execute("UPDATE catalog_imports SET status='interrupted',error='Application restarted during scan' WHERE status='running'")
         db.execute("UPDATE audit_jobs SET status='interrupted', error='Application restarted before completion' WHERE status IN ('running','queued')")
         db.execute("UPDATE audits SET status='interrupted', error='Application restarted before completion' WHERE status IN ('running','queued')")
         db.commit()
