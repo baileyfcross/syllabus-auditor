@@ -1,10 +1,11 @@
 # Windows launcher for Syllabus Auditor.
 # Compatible with Windows PowerShell 5.1 and newer PowerShell versions.
 # Run via "Start Syllabus Auditor.bat" from CMD/VS Code.
-Set-Location -LiteralPath $PSScriptRoot
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+Set-Location -LiteralPath $ProjectRoot
 $ErrorActionPreference = 'Stop'
 
-$python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+$python = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python)) {
     Write-Host 'Creating the Syllabus Auditor Python environment...'
     & py -3 -m venv .venv
@@ -26,10 +27,10 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-$model = Join-Path $PSScriptRoot 'models\Qwen3-1.7B-Q4_K_M.gguf'
+$model = Join-Path $ProjectRoot 'models\Qwen3-1.7B-Q4_K_M.gguf'
 if (Test-Path -LiteralPath $model) {
     # The checker catches missing packages and DLL failures without a traceback.
-    $runtimeCheck = Join-Path $PSScriptRoot 'tools\check_ai_runtime.py'
+    $runtimeCheck = Join-Path $ProjectRoot 'tools\check_ai_runtime.py'
     & $python $runtimeCheck
     $installed = ($LASTEXITCODE -eq 0)
     if (-not $installed -and $env:SA_SKIP_AI_INSTALL -ne '1') {

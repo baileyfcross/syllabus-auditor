@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../.."
 if [ ! -f models/Qwen3-1.7B-Q4_K_M.gguf ]; then
   echo 'Bundled AI model is absent in this source distribution; deterministic validation remains available.'
   echo 'To build a complete offline distribution, see README.md.'

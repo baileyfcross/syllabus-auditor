@@ -16,13 +16,13 @@ A self-hosted syllabus compliance checker with official-source monitoring, exact
 **Windows (PowerShell):**
 
 ```powershell
-.\start-local.ps1
+.\scripts\windows\start-local.ps1
 ```
 
 **macOS / Linux:**
 
 ```bash
-./start-local.sh
+./scripts/unix/start-local.sh
 ```
 
 Navigate to `http://127.0.0.1:8765`. The first-run setup token is printed to the console, and stored in `data/bootstrap-token.txt` until the first administrator account is created. Use a username and a password of 12+ characters. After setup, sign in.
@@ -37,7 +37,7 @@ On a computer with internet access, Python 3.12, and the same OS/architecture as
 python tools/build_distribution.py --complete --output syllabus-auditor-offline.zip
 ```
 
-The builder downloads the official 1.28GB GGUF at **build time only**, verifies the pinned SHA256, builds platform-specific Python wheels locally, and includes them alongside the application in a ZIP. Run `python tools/install_offline.py` from the extracted full package to install those wheels with `--no-index`. Then use `./run-offline.sh` (macOS/Linux) or `run-offline.bat` (Windows) to start without re-installing dependencies. The offline builder does not bundle an entire Python interpreter, so Python itself must be present on the target machine. Native GUI installers are not provided.
+The builder downloads the official 1.28GB GGUF at **build time only**, verifies the pinned SHA256, builds platform-specific Python wheels locally, and includes them alongside the application in a ZIP. Run `python tools/install_offline.py` from the extracted full package to install those wheels with `--no-index`. Then use `./scripts/unix/run-offline.sh` (macOS/Linux) or `scripts\windows\run-offline.bat` (Windows) to start without re-installing dependencies. The offline builder does not bundle an entire Python interpreter, so Python itself must be present on the target machine. Native GUI installers are not provided.
 
 The upstream open-weight model is Apache-2.0. Check all included dependency licenses before redistributing to other institutions. The runtime app has **no model downloader, AI keys, Ollama endpoint, or paid API configuration**.
 
