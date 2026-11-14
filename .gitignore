@@ -6,3 +6,5 @@ __pycache__/
 /data/*
 !/data/.gitkeep
 /models/*.gguf
+build/
+dist/
