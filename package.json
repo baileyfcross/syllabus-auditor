@@ -1,0 +1,19 @@
+{
+  "name": "syllabus-auditor-ui",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Build-time Tailwind CSS for the Syllabus Auditor shared desktop and web UI",
+  "scripts": {
+    "build": "npm run build:css",
+    "build:css": "tailwindcss -i ./styles/tailwind.css -o ./app/static/tailwind.generated.css --minify",
+    "watch:css": "tailwindcss -i ./styles/tailwind.css -o ./app/static/tailwind.generated.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "4.3.5",
+    "@tailwindcss/cli": "4.3.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

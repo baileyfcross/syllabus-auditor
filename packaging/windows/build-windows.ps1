@@ -32,6 +32,40 @@ function Ensure-File([string]$Path, [string]$Message) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw $Message }
 }
 Write-Host 'Syllabus Auditor Windows packager' -ForegroundColor Cyan
+# Compile Tailwind before PyInstaller bundles app/static. Node/npm is only a
+# BUILD dependency; users of the installed EXE do not need it.
+function Build-FrontendCss {
+  $source = Join-Path $project 'styles\tailwind.css'
+  $manifest = Join-Path $project 'package.json'
+  if (-not (Test-Path -LiteralPath $source -PathType Leaf) -and
+      -not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+    Write-Host 'Tailwind source not installed; using existing plain CSS.'
+    return
+  }
+  Ensure-File $source 'Tailwind source missing: styles\tailwind.css. Apply the design-system patch first.'
+  Ensure-File $manifest 'Tailwind package.json missing. Apply the design-system patch first.'
+  $npmCommand = Get-Command 'npm.cmd' -ErrorAction SilentlyContinue
+  if (-not $npmCommand) {
+    throw 'Node.js/npm is required to BUILD Tailwind CSS. Install Node.js LTS on the build computer; end users do not need it.'
+  }
+  $npm = $npmCommand.Source
+  Write-Host 'Installing Tailwind build dependencies...' -ForegroundColor Cyan
+  if (Test-Path -LiteralPath (Join-Path $project 'package-lock.json') -PathType Leaf) {
+    Run-Native $npm @('ci','--no-audit','--no-fund')
+  } else {
+    Run-Native $npm @('install','--no-audit','--no-fund')
+  }
+  Write-Host 'Compiling Tailwind CSS (npm run build)...' -ForegroundColor Cyan
+  Run-Native $npm @('run','build')
+  $css = Join-Path $project 'app\static\tailwind.generated.css'
+  Ensure-File $css 'Tailwind build did not create app\static\tailwind.generated.css.'
+  if ((Get-Item -LiteralPath $css).Length -lt 100) {
+    throw 'Tailwind build produced an unexpectedly empty stylesheet; stopping packaging.'
+  }
+  Write-Host 'Tailwind CSS compiled successfully.' -ForegroundColor Green
+}
+Build-FrontendCss
+
 if (-not (Test-Path -LiteralPath $python)) {
   Write-Host "Creating isolated build environment with Python $PythonVersion..."
   Run-Native 'py' @("-$PythonVersion",'-m','venv',$buildVenv)

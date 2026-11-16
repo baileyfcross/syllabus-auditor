@@ -1,0 +1,218 @@
+/* Syllabus Auditor Design System v1
+ * Copyright (c) 2026 Bailey Cross. Licensed under MIT.
+ * All cross-screen design tokens and reusable component standards live here.
+ * Loaded AFTER app.css to standardize existing pages without a risky rewrite.
+ * Tailwind utilities read these same --sa-* variables; do not duplicate colors
+ * in Tailwind's theme file. See docs/DESIGN_SYSTEM.md.
+ */
+
+/* 1. Foundations: one token map for the application. */
+:root {
+  --sa-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sa-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sa-text-xs: 11px;
+  --sa-text-sm: 12px;
+  --sa-text-md: 14px;
+  --sa-text-lg: 16px;
+  --sa-text-xl: 20px;
+  --sa-text-page: 25px;
+  --sa-weight-medium: 550;
+  --sa-weight-semibold: 650;
+  --sa-weight-bold: 750;
+
+  --sa-space-1: 4px;
+  --sa-space-2: 8px;
+  --sa-space-3: 12px;
+  --sa-space-4: 16px;
+  --sa-space-5: 20px;
+  --sa-space-6: 24px;
+  --sa-space-8: 32px;
+  --sa-space-10: 40px;
+
+  --sa-radius-sm: 7px;
+  --sa-radius-md: 9px;
+  --sa-radius-lg: 13px;
+  --sa-radius-xl: 18px;
+  --sa-radius-pill: 9999px;
+  --sa-control-height: 38px;
+  --sa-icon-size: 19px;
+
+  --sa-bg-canvas: #f6f8fc;
+  --sa-bg-surface: #ffffff;
+  --sa-bg-subtle: #f8fbff;
+  --sa-bg-hover: #eef4fb;
+  --sa-text: #1a2738;
+  --sa-text-strong: #263d60;
+  --sa-text-muted: #718093;
+  --sa-text-subtle: #8691a2;
+  --sa-border: #e4eaf3;
+  --sa-border-strong: #d5deea;
+  --sa-primary: #2d609f;
+  --sa-primary-hover: #245181;
+  --sa-on-primary: #ffffff;
+  --sa-danger: #b43b4a;
+  --sa-success: #147b58;
+  --sa-warning: #a57012;
+  --sa-focus: #4384c7;
+  --sa-focus-ring: #5d99db33;
+  --sa-sidebar-bg: #15233d;
+  --sa-sidebar-text: #b8c5d8;
+  --sa-sidebar-active: #324a6c;
+  --sa-state-success-bg: #e3f6ec;
+  --sa-state-success-text: #147b58;
+  --sa-state-warning-bg: #fff3d8;
+  --sa-state-warning-text: #a57012;
+  --sa-state-danger-bg: #ffe7e9;
+  --sa-state-danger-text: #ba4254;
+  --sa-state-info-bg: #e8eefc;
+  --sa-state-info-text: #4569a9;
+  --sa-upload-bg: #f8fbff;
+  --sa-upload-border: #adc4de;
+  --sa-document-bg: #fbfcff;
+  --sa-document-text: #2e3b4e;
+  --sa-shadow-panel: 0 2px 10px #1b376309;
+  --sa-shadow-dialog: 0 30px 100px #1a2b4680;
+  --sa-transition-fast: 150ms ease;
+}
+
+/* The existing theme.js toggles data-theme on <html>. Do not add a new theme API. */
+:root[data-theme="dark"] {
+  --sa-bg-canvas: #101724;
+  --sa-bg-surface: #1a2638;
+  --sa-bg-subtle: #182437;
+  --sa-bg-hover: #263e5a;
+  --sa-text: #e7edf8;
+  --sa-text-strong: #d7e7ff;
+  --sa-text-muted: #a9bad1;
+  --sa-text-subtle: #99adc9;
+  --sa-border: #31435e;
+  --sa-border-strong: #465c7a;
+  --sa-primary: #3672bd;
+  --sa-primary-hover: #4583d0;
+  --sa-on-primary: #ffffff;
+  --sa-danger: #ffc0cb;
+  --sa-success: #77d9ae;
+  --sa-warning: #f5d392;
+  --sa-focus: #86b4f1;
+  --sa-focus-ring: #86b4f133;
+  --sa-sidebar-bg: #0d1523;
+  --sa-sidebar-text: #c0cee3;
+  --sa-sidebar-active: #28496b;
+  --sa-state-success-bg: #184b3c;
+  --sa-state-success-text: #a1f0cc;
+  --sa-state-warning-bg: #55421c;
+  --sa-state-warning-text: #ffe2a0;
+  --sa-state-danger-bg: #542b38;
+  --sa-state-danger-text: #ffc4d0;
+  --sa-state-info-bg: #253c61;
+  --sa-state-info-text: #bad9ff;
+  --sa-upload-bg: #182a40;
+  --sa-upload-border: #456d96;
+  --sa-document-bg: #152236;
+  --sa-document-text: #edf3fb;
+  --sa-shadow-panel: 0 2px 12px #050a1299;
+  --sa-shadow-dialog: 0 30px 100px #050a12c9;
+}
+
+/* 2. App-wide typography, surfaces and layout. */
+html, html body { background: var(--sa-bg-canvas); color: var(--sa-text); font-family: var(--sa-font-sans); }
+html .workspace, html .content { background: var(--sa-bg-canvas); }
+html .sidebar, html[data-theme="dark"] .sidebar { background: var(--sa-sidebar-bg); }
+html .nav-item { color: var(--sa-sidebar-text); border-radius: var(--sa-radius-md); transition: background var(--sa-transition-fast); }
+html .nav-item.active { background: var(--sa-sidebar-active); }
+html .topbar, html[data-theme="dark"] .topbar { background: var(--sa-bg-surface); border-bottom: 1px solid var(--sa-border); }
+html .page-intro h1 { font-size: var(--sa-text-page); font-weight: var(--sa-weight-bold); }
+html .page-intro p, html .stat-label, html .stat-note, html .field .hint, html .muted { color: var(--sa-text-muted); }
+html .stat-number { color: var(--sa-text-strong); }
+html .panel, html .sa-card, html[data-theme="dark"] .panel {
+  background: var(--sa-bg-surface);
+  color: var(--sa-text);
+  border: 1px solid var(--sa-border);
+  border-radius: var(--sa-radius-lg);
+  box-shadow: var(--sa-shadow-panel);
+  min-width: 0;
+}
+html .panel-head, html[data-theme="dark"] .panel-head { border-bottom: 1px solid var(--sa-border); gap: var(--sa-space-3); }
+html .panel-pad { padding: 22px; }
+html .sa-card-body { padding: var(--sa-space-6); }
+html .sa-card-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sa-space-3); padding: var(--sa-space-4) var(--sa-space-6); border-bottom: 1px solid var(--sa-border); }
+html .sa-stack { display: flex; flex-direction: column; gap: var(--sa-space-4); }
+html .sa-inline { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sa-space-2); }
+html .sa-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--sa-space-3); }
+html .sa-section-title { font-size: var(--sa-text-lg); font-weight: var(--sa-weight-bold); color: var(--sa-text); }
+
+/* 3. Action system: same shape, alignment, focus behavior and states. */
+html .btn, html .sa-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: var(--sa-space-2);
+  min-height: var(--sa-control-height);
+  padding: 9px 15px;
+  border: 1px solid var(--sa-border-strong);
+  border-radius: var(--sa-radius-md);
+  background: var(--sa-bg-surface);
+  color: var(--sa-text);
+  font: inherit;
+  font-weight: var(--sa-weight-semibold);
+  line-height: 1.2;
+  white-space: normal;
+  text-align: center;
+  transition: background var(--sa-transition-fast), border-color var(--sa-transition-fast);
+}
+html .btn:hover:not(:disabled), html .sa-button:hover:not(:disabled) { background: var(--sa-bg-hover); }
+html .btn.primary, html .sa-button--primary { background: var(--sa-primary); border-color: var(--sa-primary); color: var(--sa-on-primary); }
+html .btn.primary:hover:not(:disabled), html .sa-button--primary:hover:not(:disabled) { background: var(--sa-primary-hover); border-color: var(--sa-primary-hover); }
+html .btn.small, html .sa-button--small { min-height: 30px; padding: 5px 10px; font-size: var(--sa-text-sm); }
+html .btn.ghost, html .sa-button--ghost { background: transparent; border-color: transparent; }
+html .btn.danger, html .sa-button--danger { color: var(--sa-danger); }
+html .btn:disabled, html .sa-button:disabled { opacity: .5; cursor: not-allowed; }
+html .actions, html .form-footer { gap: var(--sa-space-2); }
+
+/* 4. Form controls, tables, status and dialogs. */
+html .field, html .sa-field { display: flex; flex-direction: column; gap: var(--sa-space-2); min-width: 0; }
+html .field label, html .sa-label, html[data-theme="dark"] .field label { color: var(--sa-text); font-weight: var(--sa-weight-semibold); font-size: var(--sa-text-sm); }
+html .field :is(input, select, textarea), html .sa-input {
+  width: 100%; min-width: 0;
+  border: 1px solid var(--sa-border-strong);
+  border-radius: var(--sa-radius-md);
+  background: var(--sa-bg-surface);
+  color: var(--sa-text);
+  padding: 10px 12px;
+  font: inherit;
+}
+html .field :is(input, select):not([type="checkbox"]):not([type="radio"]) { min-height: var(--sa-control-height); }
+html .field :is(input, select, textarea):focus { border-color: var(--sa-focus); box-shadow: 0 0 0 3px var(--sa-focus-ring); }
+html :is(button, a, input, select, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--sa-focus); outline-offset: 2px; }
+html table th { background: var(--sa-bg-subtle); color: var(--sa-text-muted); }
+html table td { border-top: 1px solid var(--sa-border); }
+html tbody tr:hover { background: var(--sa-bg-hover); }
+html .pill, html .sa-badge { border-radius: var(--sa-radius-pill); font-weight: var(--sa-weight-bold); }
+/* Standard statuses share the same semantic palette in light and dark themes. */
+html .pill:is(.passed, .verified, .complete, .ready, .approved, .accepted, .default),
+html[data-theme="dark"] .pill:is(.passed, .verified, .complete, .ready, .approved, .accepted, .default) { background: var(--sa-state-success-bg); color: var(--sa-state-success-text); }
+html .pill:is(.warning, .changed, .complete_with_errors, .dismissed),
+html[data-theme="dark"] .pill:is(.warning, .changed, .complete_with_errors, .dismissed) { background: var(--sa-state-warning-bg); color: var(--sa-state-warning-text); }
+html .pill:is(.failed, .error, .unavailable),
+html[data-theme="dark"] .pill:is(.failed, .error, .unavailable) { background: var(--sa-state-danger-bg); color: var(--sa-state-danger-text); }
+html .pill:is(.review, .needs_review, .interrupted, .queued, .running),
+html[data-theme="dark"] .pill:is(.review, .needs_review, .interrupted, .queued, .running) { background: var(--sa-state-info-bg); color: var(--sa-state-info-text); }
+html .dropzone, html[data-theme="dark"] .dropzone { background: var(--sa-upload-bg); border-color: var(--sa-upload-border); border-radius: var(--sa-radius-lg); }
+html .docviewer, html[data-theme="dark"] .docviewer { background: var(--sa-document-bg); color: var(--sa-document-text); }
+html .status-banner, html .callout { border-radius: var(--sa-radius-md); }
+html .field input:is([type="checkbox"], [type="radio"]) { width: auto; min-width: 1rem; height: auto; }
+
+html dialog, html[data-theme="dark"] dialog { border-radius: var(--sa-radius-xl); background: var(--sa-bg-surface); color: var(--sa-text); box-shadow: var(--sa-shadow-dialog); }
+html .modal-title { gap: var(--sa-space-3); }
+html .line { background: var(--sa-border); }
+html .sa-divider { height: 1px; background: var(--sa-border); border: 0; }
+
+/* Higher specificity than the legacy dark button overrides. */
+html[data-theme="dark"] .btn:not(.primary):not(.dark):not(.ghost) { background: var(--sa-bg-surface); border-color: var(--sa-border-strong); color: var(--sa-text); }
+html[data-theme="dark"] .btn:not(.primary):not(.dark):not(.ghost):hover:not(:disabled) { background: var(--sa-bg-hover); }
+html[data-theme="dark"] .btn.primary { background: var(--sa-primary); border-color: var(--sa-primary); color: var(--sa-on-primary); }
+html[data-theme="dark"] .btn.primary:hover:not(:disabled) { background: var(--sa-primary-hover); border-color: var(--sa-primary-hover); }
+html[data-theme="dark"] .btn.danger:not(.primary) { color: var(--sa-danger); }
+html[data-theme="dark"] .field :is(input, select, textarea) { background: var(--sa-bg-surface); color: var(--sa-text); border-color: var(--sa-border-strong); }
+
+@media (prefers-reduced-motion: reduce) {
+  html .btn, html .sa-button, html .nav-item { transition-duration: 0ms; }
+}

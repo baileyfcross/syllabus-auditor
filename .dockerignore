@@ -1,7 +1,12 @@
 .git
 .venv
+.build-venv
+node_modules
+build
+dist
 __pycache__
 .pytest_cache
 **/*.pyc
 /data
 *.zip
+npm-debug.log*

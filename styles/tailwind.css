@@ -1,0 +1,32 @@
+/* Tailwind v4 utilities only. The Syllabus Auditor design system lives in
+ * app/static/design-system.css; its semantic CSS variables are the source of truth.
+ * Disable Tailwind Preflight to avoid resetting existing FastAPI/pywebview UI.
+ * Prefix utilities with tw: so they do not collide with existing .grid, .flex,
+ * .container, .hidden, .text-* and other semantic application class names.
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme) prefix(tw);
+@import "tailwindcss/utilities.css" layer(utilities) prefix(tw) source(none);
+
+/* The HTML is mostly built with template strings in app.js. Scan both files. */
+@source "../app/static/index.html";
+@source "../app/static/app.js";
+
+/* Bridge Tailwind utilities to the same light/dark CSS tokens as the components.
+   Examples: tw:bg-sa-surface tw:text-sa-text tw:border-sa-border. */
+@theme inline {
+  --color-sa-canvas: var(--sa-bg-canvas);
+  --color-sa-surface: var(--sa-bg-surface);
+  --color-sa-subtle: var(--sa-bg-subtle);
+  --color-sa-text: var(--sa-text);
+  --color-sa-muted: var(--sa-text-muted);
+  --color-sa-border: var(--sa-border);
+  --color-sa-primary: var(--sa-primary);
+  --color-sa-danger: var(--sa-danger);
+  --color-sa-success: var(--sa-success);
+  --font-sa: var(--sa-font-sans);
+  --radius-sa-sm: var(--sa-radius-sm);
+  --radius-sa-md: var(--sa-radius-md);
+  --radius-sa-lg: var(--sa-radius-lg);
+  --shadow-sa-panel: var(--sa-shadow-panel);
+}

@@ -1,3 +1,13 @@
+# Compile frontend Tailwind at image-build time. No Node.js in the final image.
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /ui
+COPY package*.json ./
+COPY styles ./styles
+COPY app/static/app.js app/static/index.html ./app/static/
+RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi \
+    && npm run build \
+    && test -s app/static/tailwind.generated.css
+
 # Build a fully self-contained container after the model has been staged in models/.
 FROM python:3.12-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 SA_HOST=0.0.0.0 SA_PORT=8765 SA_DATA_DIR=/var/lib/syllabus-auditor SA_MODEL_PATH=/opt/syllabus-auditor/models/Qwen3-1.7B-Q4_K_M.gguf
@@ -9,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements-ai.txt
 # Preinstall a headless browser during the image build; no browser download at runtime.
 RUN python -m playwright install --with-deps chromium
 COPY app ./app
+COPY --from=frontend /ui/app/static/tailwind.generated.css ./app/static/tailwind.generated.css
 COPY models ./models
 RUN test -s /opt/syllabus-auditor/models/Qwen3-1.7B-Q4_K_M.gguf || (echo 'Model missing. Run tools/prepare_model.py before Docker build.' && exit 1)
 RUN useradd -r -u 10001 -s /usr/sbin/nologin app && mkdir -p /var/lib/syllabus-auditor && chown -R app:app /var/lib/syllabus-auditor

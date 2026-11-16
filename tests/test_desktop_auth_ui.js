@@ -1,0 +1,13 @@
+'use strict';
+const fs=require('node:fs');
+const assert=require('node:assert/strict');
+const src=fs.readFileSync('app/static/app.js','utf8');
+assert(src.includes('desktop_mode'), 'Desktop state must be reported by backend');
+assert(src.includes('desktop_password_required'), 'Password lock must be reported by backend');
+assert(src.includes('Opening local desktop workspace'), 'Desktop should not show a login form during auto-login');
+assert(src.includes('Unlock Syllabus Auditor'), 'Locked desktop must show its unlock form');
+assert(src.includes('desktop-lock-enable') && src.includes('desktop-lock-disable'), 'Desktop lock controls must be available');
+assert(src.includes('/api/desktop/security'), 'Desktop lock preferences must use authenticated API');
+assert(src.includes("S.desktop?'':`<button data-act=\"logout\">Sign out</button>`"), 'Desktop should hide sign out');
+assert(src.includes('S.desktop?\'desktop-local\''), 'Local unlock should prefill the reserved username');
+console.log('PASS: desktop auto-login, optional lock controls, and hidden sign-out');

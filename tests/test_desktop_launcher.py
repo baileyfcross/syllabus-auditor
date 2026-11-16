@@ -64,6 +64,9 @@ class DesktopLauncherTests(TestCase):
             app_main.app=object()
             fake_app=types.ModuleType('app')
             fake_app.main=app_main
+            fake_desktop_auth=types.ModuleType('app.desktop_auth')
+            fake_desktop_auth.password_required=lambda:False
+            fake_desktop_auth.bootstrap_script=lambda secret,port:'(() => true)()'
             start_calls=[]; windows=[]; servers=[]
 
             class FakeServer:
@@ -93,7 +96,7 @@ class DesktopLauncherTests(TestCase):
                 kwargs['func']()
             fake_webview.create_window=create_window
             fake_webview.start=start
-            with mock.patch.dict(sys.modules, {'app':fake_app, 'app.main':app_main,'uvicorn':fake_uvicorn,'webview':fake_webview}):
+            with mock.patch.dict(sys.modules, {'app':fake_app, 'app.main':app_main,'app.desktop_auth':fake_desktop_auth,'uvicorn':fake_uvicorn,'webview':fake_webview}):
                 with mock.patch.dict(os.environ, {'SA_DATA_DIR':d}):
                     self.assertEqual(loader.main(),0)
             self.assertEqual(len(windows),1)
@@ -105,17 +108,19 @@ class DesktopLauncherTests(TestCase):
             self.assertTrue(servers[0].should_exit)
             self.assertEqual(servers[0].config.kwargs['host'],'127.0.0.1')
 
-    def test_first_run_token_is_not_exposed_as_permanent_api(self):
-        with tempfile.TemporaryDirectory() as d:
-            token_file=pathlib.Path(d)/'bootstrap-token.txt'
-            token_file.write_text('one-use-token',encoding='utf-8')
-            class W:
-                def __init__(self): self.scripts=[]
-                def evaluate_js(self,s): self.scripts.append(s);return True
-            w=W();loader.prefill_first_run_token(w,token_file)
-            self.assertEqual(len(w.scripts),1)
-            self.assertIn('one-use-token',w.scripts[0])
-            self.assertIn('#f-token',w.scripts[0])
+    def test_native_one_time_token_is_not_in_window_url(self):
+        class Window:
+            script=''
+            def evaluate_js(self, script):
+                self.script=script
+                return True
+        from app import desktop_auth
+        window=Window()
+        with mock.patch.object(desktop_auth,'password_required',return_value=False), \
+             mock.patch.object(desktop_auth,'bootstrap_script',return_value='secure-headers-only'):
+            loader.unlock_native_window(window,'secret',8765)
+        self.assertEqual(window.script,'secure-headers-only')
+
 
 
 if __name__=='__main__':

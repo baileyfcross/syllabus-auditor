@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import secrets
 import os
 import socket
 import sys
@@ -55,6 +56,7 @@ def configure_runtime(port: int) -> tuple[Path, Path]:
     data_dir.mkdir(parents=True, exist_ok=True)
     os.environ["SA_DATA_DIR"] = str(data_dir)
     os.environ.setdefault("SA_MODEL_PATH", str(root / "models" / MODEL_NAME))
+    os.environ["SA_DESKTOP_BOOTSTRAP_SECRET"] = secrets.token_urlsafe(48)
     os.environ["SA_HOST"] = HOST
     os.environ["SA_PORT"] = str(port)
     os.environ["SA_SECURE_COOKIES"] = "false"  # Only loopback; hosted mode keeps HTTPS.
@@ -125,21 +127,12 @@ def await_server(server, thread: threading.Thread, port: int, timeout: float = 3
     raise TimeoutError(f"Application service did not start on port {port}.")
 
 
-def prefill_first_run_token(window, token_path: Path) -> None:
-    """Fill the native window's setup form without exposing a permanent JS bridge.
-
-    Hosted installs retain normal token entry. Only the local process reads this
-    file, and injection happens once while the initial setup form is visible.
-    """
-    if not token_path.is_file():
-        return
-    token = token_path.read_text(encoding="utf-8").strip()
-    if not token:
-        return
-    literal = json.dumps(token)
-    script = ("(() => { const field = document.querySelector('#f-token'); "
-              "if (!field) return false; field.value = " + literal + "; "
-              "field.dispatchEvent(new Event('input', { bubbles: true })); return true; })()")
+def unlock_native_window(window, secret: str, port: int) -> None:
+    """Open a secure desktop-only session without revealing a password or URL token."""
+    from app.desktop_auth import bootstrap_script, password_required
+    if password_required():
+        return  # Explicit startup lock: display the normal password form.
+    script = bootstrap_script(secret, port)
     for _ in range(50):
         try:
             if window.evaluate_js(script):
@@ -147,6 +140,7 @@ def prefill_first_run_token(window, token_path: Path) -> None:
         except Exception:
             pass
         time.sleep(0.15)
+    raise RuntimeError('Desktop session could not be initialized in the application window')
 
 
 def main() -> int:
@@ -158,6 +152,7 @@ def main() -> int:
     try:
         port = select_port()
         _, data_dir = configure_runtime(port)
+        desktop_secret = os.environ["SA_DESKTOP_BOOTSTRAP_SECRET"]
         # Source launches need the project root on sys.path; frozen builds use
         # PyInstaller's embedded modules. Configure data paths before app import.
         ensure_app_import_path()
@@ -179,7 +174,7 @@ def main() -> int:
                                        width=1360, height=860, min_size=(960, 620),
                                        text_select=True, confirm_close=False)
         # The WebView uses the OS-provided Edge WebView2 engine; no extra browser window.
-        webview.start(func=lambda: prefill_first_run_token(window, data_dir / "bootstrap-token.txt"),
+        webview.start(func=lambda: unlock_native_window(window, desktop_secret, port),
                       gui="edgechromium", debug=False)
         return 0
     finally:

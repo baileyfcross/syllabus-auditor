@@ -630,7 +630,7 @@ def test_course_title_uses_actual_catalog_value_and_not_unrelated_heading():
     assert title['status']=='passed',title
     assert title['expected']=='Fundamentals of CIS'
     assert title['location']=='Paragraph 1'
-    assert title['observed']=='CIS-125 Fundamentals of CIS'
+    assert title['observed']=='Fundamentals of CIS'
     assert 'Course Materials and Support' not in title['observed']
     assert title['source_url']==course['source_url']
 
@@ -674,7 +674,7 @@ def test_untrusted_catalog_title_is_not_treated_as_verified():
     _,findings=audit_document(extracted,[],course,use_ai=False)
     title=next(x for x in findings if x['code']=='catalog_title')
     assert title['status']=='review'
-    assert title['observed']=='Course Name: Fundamentals of CIS'
+    assert title['observed']=='Fundamentals of CIS'
 
 
 def test_explicit_wrong_title_is_reported_without_matching_other_sections():

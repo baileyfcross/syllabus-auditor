@@ -143,6 +143,71 @@ def _check_text(name,expected,mode,blocks,severity,category,req_id=None,variants
         reason='Expected wording was not found verbatim. Similar passage detected.' if status=='warning' else 'Located section does not contain required approved wording.'
     return _finding(name,name,category,status,severity,expected,observed,loc,reason,source_url,confidence,requirement_id=req_id)
 
+# The course prefix and number are authoritative identifiers, distinct from the
+# human-readable course title. Compare their values independently, using a
+# single title/header code occurrence rather than combining unrelated mentions.
+COURSE_IDENTIFIER = re.compile(
+    r'(?<![A-Za-z0-9])(?P<prefix>[A-Za-z]{2,5})\s*[-\u2013\u2014 ]\s*'
+    r'(?P<number>\d{3,4}[A-Za-z]?)(?![A-Za-z0-9])', re.I)
+
+
+def _course_identifier_findings(course, blocks):
+    source_url = course.get('source_url', '')
+    expected = str(course.get('code') or '').strip()
+    code = COURSE_IDENTIFIER.fullmatch(expected)
+    if not code:
+        return [_finding('catalog_course_prefix', 'Course prefix', 'catalog',
+                         'review', 'warning', reason='The catalog course identifier is not configured in a recognizable prefix-and-number format.', url=source_url),
+                _finding('catalog_course_number', 'Course number', 'catalog',
+                         'review', 'warning', reason='The catalog course identifier is not configured in a recognizable prefix-and-number format.', url=source_url)]
+
+    # Prefer explicit identifier fields and early headings; these are much
+    # more reliable than course codes in prerequisites or related-course lists.
+    identifiers = []
+    label = re.compile(r'^\s*(?:course\s+(?:code|number|identifier)|course|class|subject)\s*[:\-|]\s*', re.I)
+    unrelated = re.compile(r'^\s*(?:prerequisites?|corequisites?|recommended|related\s+courses?|cross[- ]listed)\s*[:\-]', re.I)
+    for i, block in enumerate(blocks[:45]):
+        raw = str(block.get('text') or '')
+        for line in raw.replace(' | ', '\n').splitlines():
+            line = line.strip()
+            if not line or len(line) > 180 or unrelated.match(line):
+                continue
+            for found in COURSE_IDENTIFIER.finditer(line):
+                prefix, number = found.group('prefix').upper(), found.group('number').upper()
+                labeled = bool(label.match(line))
+                heading = block.get('kind') == 'heading'
+                # One code on a short, early title line is strong evidence.
+                short_title_line = i < 12 and len(line.split()) <= 20
+                if not (labeled or heading or short_title_line):
+                    continue
+                # The earliest labeled/heading code wins; a prerequisite mention
+                # later in the syllabus must not override the course's identity.
+                priority = (2 if labeled else 1 if heading else 0,
+                            1 if i < 12 else 0,
+                            1 if prefix == code.group('prefix').upper() and number == code.group('number').upper() else 0,
+                            -i)
+                identifiers.append((priority, prefix, number, found.group(0), block.get('location', '')))
+    best = max(identifiers, key=lambda item:item[0]) if identifiers else None
+    expected_prefix, expected_number = code.group('prefix').upper(), code.group('number').upper()
+    parts = [('catalog_course_prefix', 'Course prefix', expected_prefix, 1),
+             ('catalog_course_number', 'Course number', expected_number, 2)]
+    output = []
+    for finding_code, title, expected_value, ix in parts:
+        if not best:
+            output.append(_finding(finding_code, title, 'catalog', 'review', 'critical',
+                expected_value, reason=f'The syllabus {title.lower()} was not located in a recognizable course identifier near the beginning of the document.', url=source_url))
+            continue
+        actual = best[ix]
+        matched = actual == expected_value
+        output.append(_finding(finding_code, title, 'catalog',
+            'passed' if matched else 'failed', 'critical', expected_value, actual,
+            best[4], f'The syllabus {title.lower()} matches the catalog.' if matched else
+            f'The syllabus {title.lower()} differs from the selected catalog course identifier.',
+            source_url, 1, evidence={'syllabus_course_code': best[3],
+                                     'catalog_course_code': expected}))
+    return output
+
+
 def _check_course_title(expected, blocks, source_url='', course=None):
     """Match the *catalog value* against title-bearing syllabus text, not the label.
 
@@ -175,8 +240,11 @@ def _check_course_title(expected, blocks, source_url='', course=None):
             if len(line) > 250:
                 continue
             cleaned = label.sub('', line).strip()
-            # Course codes can precede the actual title on the title page.
-            cleaned = re.sub(r'^\s*[A-Za-z]{2,6}\s*[-–:]?\s*\d{3,4}[A-Za-z]?\s*[:\-|]?\s*', '', cleaned).strip()
+            # Treat the identifier as a separate field even when it precedes
+            # the title in the same heading (e.g. CSC-220 Foundations...).
+            code_at_start = COURSE_IDENTIFIER.match(cleaned)
+            if code_at_start:
+                cleaned = cleaned[code_at_start.end():].lstrip(' :|–—-').strip()
             # A bare "Course Title" label is not a course title.
             if not cleaned or letters(cleaned) in ('title', 'course title', 'course name'):
                 continue
@@ -189,13 +257,13 @@ def _check_course_title(expected, blocks, source_url='', course=None):
             text = letters(cleaned)
             # Compare the *title* rather than scoring against the words "Course title".
             if re.search(r'(?<![a-z0-9])' + re.escape(compact_expected) + r'(?![a-z0-9])', text):
-                candidates.append((1.0 if text == compact_expected else .98, i, block, line))
+                candidates.append((1.0 if text == compact_expected else .98, i, block, cleaned))
             elif len(compact_expected) >= 8:
                 score = similarity(cleaned, value)
                 if score >= .89:
-                    candidates.append((score, i, block, line))
+                    candidates.append((score, i, block, cleaned))
                 elif labeled and len(cleaned) > 3:
-                    mismatched.append((i, block, line))
+                    mismatched.append((i, block, cleaned))
             elif labeled and len(cleaned) > 3:
                 mismatched.append((i, block, line))
     # Label and value may be separate paragraphs or table lines.
@@ -240,9 +308,8 @@ def audit_document(extracted,requirements,course=None,template=None,use_ai=True)
     if extracted.get('ocr_pages') and any(x<0 for x in extracted['ocr_pages']):
         findings.append(_finding('ocr','OCR coverage','document','review','warning',reason='OCR was not available for one or more image-based pages. Some text may be missing.'))
     if course:
-        # Guard against checking a wrong course record
-        if code and course['code'].upper()!=code.upper():
-            findings.append(_finding('course_code','Course identifier','catalog','failed','critical',course['code'],code,'Beginning of document','Syllabus course code differs from selected catalog record.',course.get('source_url',''),1))
+        # Validate identifier components individually, independent of title.
+        findings.extend(_course_identifier_findings(course, blocks))
         for key,label in [('title','Course title'),('description','Course description'),('credits','Credit hours'),('prerequisites','Prerequisites')]:
             value=course.get(key,'')
             if not value: continue

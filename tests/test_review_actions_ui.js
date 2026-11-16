@@ -1,0 +1,28 @@
+'use strict';
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const src = fs.readFileSync('app/static/app.js', 'utf8');
+const beginning = src.indexOf('async function renderAuditDetail(');
+const end = src.indexOf('function inspector(', beginning);
+assert(beginning > -1 && end > beginning, 'Could not locate audit detail renderer');
+const render = src.slice(beginning, end);
+const next = render.indexOf("aButton(icon('right')+' Next unreviewed','next-unreviewed'");
+const approve = render.indexOf("aButton('Approve syllabus','approve-audit'");
+assert(next >= 0 && approve > next, 'Next unreviewed must be beside Approve syllabus');
+const actions = render.indexOf('review-action-buttons');
+assert(actions >= 0 && actions < next, 'Both buttons should be grouped in the approval actions');
+assert(!render.includes('issue-nav-toolbar'), 'Next unreviewed must not appear in the findings toolbar');
+assert(render.includes('disabled title="All findings reviewed"'), 'No pending findings must disable Next unreviewed');
+// The existing selection logic remains cyclic and skips accepted/dismissed items.
+const helperStart = src.indexOf('function nextUnreviewedFinding(');
+const helperEnd = src.indexOf('function focusLocation(', helperStart);
+const context = {};
+vm.createContext(context);
+vm.runInContext(src.slice(helperStart, helperEnd), context);
+const rows = [{id:1,status:'passed'}, {id:2,status:'warning',accepted:true}, {id:3,status:'review'}, {id:4,status:'failed',dismissed:true}];
+assert.equal(context.nextUnreviewedFinding(rows, 1).id, 3);
+assert.equal(context.nextUnreviewedFinding(rows, 3).id, 3);
+rows[2].dismissed = true;
+assert.equal(context.nextUnreviewedFinding(rows, 3), null);
+console.log('PASS approve/next button placement and unreviewed navigation');

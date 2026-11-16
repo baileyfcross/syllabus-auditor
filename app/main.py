@@ -17,12 +17,14 @@ from .catalog_bulk import scan_catalog,apply_import,create_browser_capture_impor
 from .reports import load,pdf_report,docx_report,csv_report,batch_zip
 from .approval import build_approved_syllabus, review_summary
 from .ai import ai
+from . import desktop_auth
 
 app=FastAPI(title='Syllabus Auditor',version='1.0.0',docs_url=None,redoc_url=None)
 app.mount('/assets',StaticFiles(directory=ROOT/'app'/'static'),name='assets')
 executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix='audit')
 STOP=threading.Event()
 TOKEN_FILE=DATA_DIR/'bootstrap-token.txt'
+DESKTOP_SESSIONS=set()
 
 class UserError(Exception):pass
 
@@ -153,7 +155,23 @@ def _monitor():
 @app.on_event('startup')
 def startup():
     initialize()
-    if not one('SELECT id FROM users LIMIT 1'):
+    if desktop_auth.ENABLED:
+        # A local-only identity is needed for audit FKs, review ownership, and
+        # the existing authorization code. A randomly chosen password prevents
+        # the auto-login identity from being usable as a normal hosted account.
+        with transaction() as db:
+            row = db.execute('SELECT id FROM users WHERE username=?', (desktop_auth.DESKTOP_USER,)).fetchone()
+            if not row:
+                db.execute('INSERT INTO users(username,password_hash,role,created_at) VALUES(?,?,?,?)',
+                           (desktop_auth.DESKTOP_USER, pbkdf(secrets.token_urlsafe(48)), 'admin', now()))
+            else:
+                db.execute('UPDATE users SET role=? WHERE username=?', ('admin', desktop_auth.DESKTOP_USER))
+            # In desktop mode, invalidate old local cookies at every launch.
+            # This also ensures an optional startup lock cannot be bypassed by
+            # an admin session cached from an earlier source-mode launch.
+            db.execute('DELETE FROM sessions')
+        TOKEN_FILE.unlink(missing_ok=True)
+    elif not one('SELECT id FROM users WHERE username!=? LIMIT 1',(desktop_auth.DESKTOP_USER,)):
         if not TOKEN_FILE.exists():TOKEN_FILE.write_text(secrets.token_urlsafe(24))
         try:os.chmod(TOKEN_FILE,0o600)
         except OSError:pass
@@ -164,7 +182,11 @@ def startup():
 
 @app.on_event('shutdown')
 def shutdown():
-    STOP.set();executor.shutdown(wait=False,cancel_futures=True)
+    STOP.set()
+    for digest in list(DESKTOP_SESSIONS):
+        execute('DELETE FROM sessions WHERE token_hash=?', (digest,))
+    DESKTOP_SESSIONS.clear()
+    executor.shutdown(wait=False,cancel_futures=True)
 
 @app.exception_handler(ValueError)
 async def validation_error_handler(request:Request, exc:ValueError):
@@ -186,10 +208,58 @@ def index():return (ROOT/'app'/'static'/'index.html').read_text(encoding='utf-8'
 @app.get('/health')
 def health():return {'ok':True,'product':'Syllabus Auditor','version':'1.0.0'}
 @app.get('/api/bootstrap')
-def bootstrap():return {'needs_setup':not bool(one('SELECT id FROM users LIMIT 1')),'version':'1.0.0'}
+def bootstrap():
+    return {'needs_setup':not desktop_auth.ENABLED and not bool(one('SELECT id FROM users WHERE username!=? LIMIT 1',
+                                                          (desktop_auth.DESKTOP_USER,))),
+            'version':'1.0.0', 'desktop_mode':desktop_auth.ENABLED,
+            'desktop_password_required':desktop_auth.password_required() if desktop_auth.ENABLED else False}
+
+@app.post('/api/desktop/unlock')
+def desktop_unlock(request:Request):
+    """One-time native-WebView handshake; not available in hosted web mode."""
+    if not desktop_auth.ENABLED:
+        fail('Not found',404)
+    client = request.client.host if request.client else ''
+    host = request.headers.get('host','')
+    if client != '127.0.0.1' or not re.fullmatch(r'127\.0\.0\.1:\d{1,5}',host):
+        fail('Local desktop connection required',403)
+    origin = request.headers.get('origin','')
+    if origin and origin != f'http://{host}':
+        fail('Invalid origin',403)
+    secret = request.headers.get('x-sa-desktop-secret','')
+    if not desktop_auth.consume_secret(secret):
+        fail('Desktop unlock not authorized',403)
+    user=one('SELECT id,username,role FROM users WHERE username=?',(desktop_auth.DESKTOP_USER,))
+    if not user:fail('Desktop identity not initialized',503)
+    token = secrets.token_urlsafe(48)
+    csrf = secrets.token_urlsafe(24)
+    expiry=(datetime.now(timezone.utc)+timedelta(hours=12)).isoformat(timespec='seconds')
+    digest=token_hash(token)
+    execute('INSERT INTO sessions(token_hash,user_id,csrf,expires_at) VALUES(?,?,?,?)',
+            (digest,user['id'],csrf,expiry))
+    DESKTOP_SESSIONS.add(digest)
+    response=JSONResponse({'ok':True})
+    response.set_cookie('sa_session',token,max_age=12*3600,httponly=True,secure=False,samesite='strict',path='/')
+    return response
+
+@app.post('/api/desktop/security')
+async def desktop_security(request:Request,user=Depends(admin)):
+    if not desktop_auth.ENABLED:fail('Not found',404)
+    body=await request.json()
+    enabled=body.get('require_password')
+    if type(enabled) is not bool:fail('require_password must be a boolean')
+    local=one('SELECT id FROM users WHERE username=?',(desktop_auth.DESKTOP_USER,))
+    if not local:fail('Desktop identity missing',503)
+    if enabled:
+        password=str(body.get('new_password',''))
+        if len(password)<12:fail('Choose a startup password of at least 12 characters')
+        execute('UPDATE users SET password_hash=? WHERE id=?',(pbkdf(password),local['id']))
+    desktop_auth.set_password_required(enabled)
+    return {'ok':True,'require_password':enabled,'effective':'next_launch'}
+
 @app.post('/api/setup')
 async def setup(request:Request):
-    if one('SELECT id FROM users LIMIT 1'):fail('Already configured',403)
+    if desktop_auth.ENABLED or one('SELECT id FROM users WHERE username!=? LIMIT 1',(desktop_auth.DESKTOP_USER,)):fail('Already configured',403)
     body=await request.json();provided=str(body.get('token',''))
     if not TOKEN_FILE.exists() or not hmac.compare_digest(provided,TOKEN_FILE.read_text().strip()):fail('Invalid first-run setup token',403)
     username=str(body.get('username','')).strip().lower();password=str(body.get('password',''))
@@ -202,6 +272,7 @@ async def setup(request:Request):
 async def login(request:Request):
     body=await request.json();username=str(body.get('username','')).strip().lower()
     user=one('SELECT * FROM users WHERE username=?',(username,))
+    if username==desktop_auth.DESKTOP_USER and (not desktop_auth.ENABLED or not desktop_auth.password_required()):fail('Incorrect username or password',401)
     if not user or not valid_password(str(body.get('password','')),user['password_hash']):
         await asyncio.sleep(.3)
         fail('Incorrect username or password',401)
@@ -967,11 +1038,12 @@ def revisions(kind:str='',user=Depends(admin)):
     return all_rows('SELECT * FROM revisions WHERE kind=? ORDER BY id DESC LIMIT 200',(kind,)) if kind else all_rows('SELECT * FROM revisions ORDER BY id DESC LIMIT 200')
 @app.get('/api/users')
 def users(user=Depends(admin)):
-    return all_rows('SELECT id,username,role,created_at FROM users ORDER BY username')
+    return all_rows('SELECT id,username,role,created_at FROM users WHERE username!=? ORDER BY username',(desktop_auth.DESKTOP_USER,))
 @app.post('/api/users')
 async def add_user(request:Request,user=Depends(admin)):
     body=await request.json();username=str(body.get('username','')).strip().lower();pwd=str(body.get('password',''))
     role=body.get('role','reviewer')
+    if username==desktop_auth.DESKTOP_USER:fail('This username is reserved',400)
     if role not in ('admin','reviewer'):fail('Invalid role')
     if not re.fullmatch(r'[a-z0-9._-]{3,40}',username) or len(pwd)<12:fail('Username invalid or password shorter than 12 characters')
     try:ident=execute('INSERT INTO users(username,password_hash,role,created_at) VALUES(?,?,?,?)',(username,pbkdf(pwd),role,now()))
@@ -979,6 +1051,8 @@ async def add_user(request:Request,user=Depends(admin)):
     log(user['id'],'user.create',str(ident));return {'id':ident}
 @app.post('/api/users/password')
 async def change_password(request:Request,user=Depends(current_user)):
+    if desktop_auth.ENABLED and user['username']==desktop_auth.DESKTOP_USER and not desktop_auth.password_required():
+        fail('Enable startup password protection in Desktop Security first',403)
     body=await request.json();record=one('SELECT * FROM users WHERE id=?',(user['id'],))
     if not valid_password(str(body.get('old_password','')),record['password_hash']):fail('Current password incorrect')
     pwd=str(body.get('new_password',''))
@@ -989,4 +1063,6 @@ async def change_password(request:Request,user=Depends(current_user)):
 @app.get('/api/runtime')
 def runtime(user=Depends(current_user)):
     return {'ai':ai.status(),'model_path':str(MODEL_PATH),'data_path':str(DATA_DIR),'max_upload_mb':MAX_UPLOAD//1024//1024,
-            'monitor_interval_hours':MONITOR_INTERVAL_HOURS,'ai_external_connections':False}
+            'monitor_interval_hours':MONITOR_INTERVAL_HOURS,'ai_external_connections':False,
+            'desktop_mode':desktop_auth.ENABLED,
+            'desktop_password_required':desktop_auth.password_required() if desktop_auth.ENABLED else False}
