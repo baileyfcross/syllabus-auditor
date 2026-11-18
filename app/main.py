@@ -11,6 +11,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from .config import ROOT, DATA_DIR,UPLOAD_DIR,MAX_UPLOAD,SESSION_DAYS,MODEL_PATH,MONITOR_INTERVAL_HOURS
 from .database import initialize,one,all_rows,execute,transaction,now,record_revision,log
 from .documents import validate_upload,extract,template_sections,infer_course_code,correct_docx
+from .zip_uploads import expand_syllabus_uploads, MAX_ZIP_UPLOAD_BYTES, MAX_BATCH_BYTES
 from .validation import audit_document
 from .sources import check_target,discover_course,refresh_institution,normalize_allowed_hosts
 from .catalog_bulk import scan_catalog,apply_import,create_browser_capture_import,MAX_PAGES,_self_service
@@ -18,6 +19,7 @@ from .reports import load,pdf_report,docx_report,csv_report,batch_zip
 from .approval import build_approved_syllabus, review_summary
 from .ai import ai
 from . import desktop_auth
+from .template_upload_errors import record_template_upload_error
 
 app=FastAPI(title='Syllabus Auditor',version='1.0.0',docs_url=None,redoc_url=None)
 app.mount('/assets',StaticFiles(directory=ROOT/'app'/'static'),name='assets')
@@ -341,23 +343,48 @@ def templates(institution_id:Optional[int]=None,user=Depends(current_user)):
     return all_rows('SELECT * FROM templates ORDER BY id DESC')
 @app.post('/api/templates/upload')
 async def upload_template(institution_id:int=Form(...),name:str=Form(...),academic_year:str=Form(''),notes:str=Form(''),is_default:bool=Form(False),file:UploadFile=File(...),user=Depends(admin)):
+    """Import DOCX/PDF template with private diagnostics for desktop failures."""
     assert_institution(institution_id)
-    content=await file.read(MAX_UPLOAD+1);validate_upload(file.filename,content)
-    filename=secrets.token_hex(16)+Path(file.filename).suffix.lower();path=UPLOAD_DIR/filename
-    path.write_bytes(content)
-    try:sections=template_sections(path)
-    except Exception:
-        path.unlink(missing_ok=True);raise
+    source_name = (file.filename or '').strip()
+    if not source_name:
+        fail('No template filename was received. Select a DOCX or PDF file and try again.',400)
+    try:
+        content = await file.read(MAX_UPLOAD+1)
+    except Exception as exc:
+        ref = record_template_upload_error(exc, 'read-upload', source_name)
+        fail(f'Could not read the selected template file (reference {ref}).',500)
+    validate_upload(source_name,content)
+    filename=secrets.token_hex(16)+Path(source_name).suffix.lower();path=UPLOAD_DIR/filename
+    try:
+        path.write_bytes(content)
+    except OSError as exc:
+        ref = record_template_upload_error(exc, 'save-file', source_name)
+        fail(f'Could not save the template on this computer (reference {ref}). Check storage permissions and free disk space.',500)
+    try:
+        sections=template_sections(path)
+    except ValueError as exc:
+        path.unlink(missing_ok=True)
+        fail(f'The template could not be read: {exc}',400)
+    except Exception as exc:
+        path.unlink(missing_ok=True)
+        ref = record_template_upload_error(exc, 'extract-sections', source_name)
+        fail(f'Could not extract sections from the template (reference {ref}).',500)
     try:
         with transaction() as db:
             if is_default:
                 db.execute('UPDATE templates SET is_default=0 WHERE institution_id=?',(institution_id,))
             ident=db.execute('''INSERT INTO templates(institution_id,name,academic_year,notes,doc_path,sections_json,is_default,created_at) VALUES(?,?,?,?,?,?,?,?)''',
                 (institution_id,name[:180],academic_year[:30],notes[:2000],str(path),json.dumps([{**s,'required':True} for s in sections]),int(is_default),now())).lastrowid
-    except Exception:
+    except Exception as exc:
         path.unlink(missing_ok=True)
-        raise
-    log(user['id'],'template.create',str(ident));return {'id':ident,'sections':sections}
+        ref = record_template_upload_error(exc, 'save-database', source_name)
+        fail(f'Could not save the template record (reference {ref}).',500)
+    # The document was committed successfully even if the activity log fails.
+    try:
+        log(user['id'],'template.create',str(ident))
+    except Exception as exc:
+        record_template_upload_error(exc, 'activity-log', source_name)
+    return {'id':ident,'sections':sections}
 @app.put('/api/templates/{ident}')
 async def update_template(ident:int,request:Request,user=Depends(admin)):
     old=assert_template(ident);body=await request.json()
@@ -665,13 +692,20 @@ async def upload_audits(request:Request, institution_id:int=Form(...),template_i
         if not chosen['active']:fail('Selected template is inactive')
     if not files or len(files)>100:fail('Upload between 1 and 100 files')
     if len(academic_year)>40:fail('Academic year is too long')
-    # All validation occurs before anything is created.
-    staged=[]
+    # Expand ZIP batches and validate all documents before creating audit records.
+    uploaded=[]
+    received_bytes=0
     for f in files:
-        content=await f.read(MAX_UPLOAD+1)
-        suffix=validate_upload(f.filename,content)
-        staged.append((Path(f.filename).name[:180],suffix,content))
-        if sum(len(row[2]) for row in staged)>200*1024*1024:fail('Combined batch upload exceeds 200 MB')
+        filename=Path((f.filename or '').replace('\\','/')).name
+        limit=MAX_ZIP_UPLOAD_BYTES if filename.lower().endswith('.zip') else MAX_UPLOAD
+        content=await f.read(limit+1)
+        if len(content)>limit:
+            fail(f'{filename}: upload exceeds {limit // 1024 // 1024} MB')
+        received_bytes+=len(content)
+        if received_bytes>MAX_BATCH_BYTES:
+            fail('Combined uploaded data exceeds 200 MB')
+        uploaded.append((filename,content))
+    staged,skipped_count,skipped_preview=expand_syllabus_uploads(uploaded,validate_upload)
     job_id=execute('INSERT INTO audit_jobs(institution_id,template_id,academic_year,created_by,created_at,total) VALUES(?,?,?,?,?,?)',
       (institution_id,template_id or None,academic_year,user['id'],now(),len(staged)))
     audit_ids=[]
@@ -685,7 +719,8 @@ async def upload_audits(request:Request, institution_id:int=Form(...),template_i
         audit_ids.append(ident)
     executor.submit(run_job,job_id)
     log(user['id'],'audits.upload',str(job_id),f'{len(audit_ids)} file(s)')
-    return {'job_id':job_id,'audit_ids':audit_ids,'status':'queued'}
+    return {'job_id':job_id,'audit_ids':audit_ids,'status':'queued','documents_queued':len(staged),
+            'skipped_count':skipped_count,'skipped_entries':skipped_preview}
 @app.get('/api/jobs')
 def jobs(user=Depends(current_user)):
     return all_rows('''SELECT j.*,i.name AS institution_name FROM audit_jobs j JOIN institutions i ON i.id=j.institution_id

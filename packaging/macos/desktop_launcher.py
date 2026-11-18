@@ -85,9 +85,9 @@ def select_port() -> int:
 
 
 def hold_single_instance(path: Path) -> IO[str]:
+    """Prevent concurrent writers to the same desktop SQLite database."""
     if fcntl is None:
         raise RuntimeError('macOS desktop lock requires fcntl')
-    """Prevent concurrent writers to the same desktop SQLite database."""
     lock_path = path / "desktop.lock"
     lock = lock_path.open("a+", encoding="utf-8")
     try:
@@ -109,19 +109,83 @@ def await_startup(server, worker: threading.Thread, timeout: float = 30.0) -> No
     raise TimeoutError("Syllabus Auditor service did not start")
 
 
+def _desktop_log(message: str) -> None:
+    """Write diagnostics even when native-window callbacks run on a worker."""
+    log_file = Path.home() / "Library" / "Logs" / "SyllabusAuditor" / "desktop.log"
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as stream:
+            stream.write(time.strftime("\n%Y-%m-%d %H:%M:%S ") + message + "\n")
+    except OSError:
+        pass
+
+
+def _show_unlock_problem(window, message: str) -> None:
+    """Show a useful error in the native window, not a permanent spinner."""
+    _desktop_log("Desktop sign-in: " + message)
+    message = (
+        "Could not open the local desktop workspace. " + message +
+        " Close the app and try again. See ~/Library/Logs/SyllabusAuditor/desktop.log."
+    )
+    script = (
+        "(() => { const app = document.getElementById('app'); "
+        "if (app) { app.replaceChildren(); const panel=document.createElement('div'); "
+        "panel.className='auth-screen'; const card=document.createElement('div'); "
+        "card.className='auth-card'; const title=document.createElement('h2'); "
+        "title.textContent='Desktop startup problem'; const detail=document.createElement('p'); "
+        "detail.textContent=" + json.dumps(message) + "; card.append(title,detail); "
+        "panel.append(card); app.append(panel); } })();"
+    )
+    try:
+        window.run_js(script)
+    except Exception as exc:
+        _desktop_log("Could not display startup error: " + repr(exc))
+
+
+def _session_created() -> bool:
+    """Check that the one-time unlock actually created a backend session.
+
+    The server clears old sessions at startup, so a fresh desktop-local session
+    is evidence that the one-time secret was consumed successfully. This is a
+    backend check; it does not expose the secret or require JS eval.
+    """
+    from app.database import one
+    return bool(one(
+        "SELECT s.token_hash FROM sessions s JOIN users u ON u.id=s.user_id "
+        "WHERE u.username=? LIMIT 1", ("desktop-local",)
+    ))
+
+
 def unlock_native_window(window, secret: str, port: int) -> None:
+    """Establish an authenticated session without requiring CSP-unsafe eval.
+
+    pywebview.evaluate_js uses JS eval, blocked by our app's Content-Security-
+    Policy. run_js dispatches the script directly into WKWebView instead.
+    """
     from app.desktop_auth import bootstrap_script, password_required
     if password_required():
+        return  # Opt-in startup password: the normal login form is expected.
+
+    try:
+        # Avoid injecting while WKWebView still shows a blank initial page.
+        if not window.events.loaded.wait(timeout=20):
+            _show_unlock_problem(window, "The application page did not finish loading.")
+            return
+        window.run_js(bootstrap_script(secret, port))
+    except Exception as exc:
+        _show_unlock_problem(window, "The native sign-in script could not run: " + str(exc))
         return
-    script = bootstrap_script(secret, port)
+
+    # run_js intentionally returns no result. Confirm the protected session
+    # appeared rather than assuming that dispatching the JS succeeded.
     for _ in range(50):
         try:
-            if window.evaluate_js(script):
+            if _session_created():
                 return
-        except Exception:
-            pass
-        time.sleep(0.15)
-    raise RuntimeError('Desktop session could not be initialized in the application window')
+        except Exception as exc:
+            _desktop_log("Desktop session check: " + repr(exc))
+        time.sleep(0.2)
+    _show_unlock_problem(window, "Automatic desktop sign-in did not finish.")
 
 
 def report_failure(exc: BaseException) -> None:

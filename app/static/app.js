@@ -15,8 +15,10 @@ async function api(url,opt={}){
  const method=opt.method||'GET', headers={...(opt.headers||{})};
  if(S.user && !['GET','HEAD'].includes(method))headers['X-CSRF-Token']=S.user.csrf;
  if(opt.body && !(opt.body instanceof FormData) && typeof opt.body==='object'){headers['Content-Type']='application/json';opt.body=JSON.stringify(opt.body)}
- const resp=await fetch(url,{credentials:'same-origin',...opt,method,headers});
- if(!resp.ok){let msg='Request failed';try{const j=await resp.json();msg=typeof j.detail==='string'?j.detail:JSON.stringify(j.detail)}catch{}
+ let resp;
+ try {resp=await fetch(url,{credentials:'same-origin',...opt,method,headers})}
+ catch(err){throw Error(`Could not connect to the local Syllabus Auditor service: ${err?.message||'Network request failed'}`)}
+ if(!resp.ok){let msg=`Request failed (HTTP ${resp.status}${resp.statusText?' '+resp.statusText:''})`;try{const j=await resp.json();if(j&&j.detail)msg=typeof j.detail==='string'?j.detail:JSON.stringify(j.detail)}catch{}
   if(resp.status===401 && S.user){S.user=null;if(S.desktop&&!S.desktopPasswordRequired)notify('Your local session ended. Restart the desktop application to sign in again.','error');else loginUI()}
   throw Error(msg)}
  if(resp.status===204)return null;
@@ -67,9 +69,9 @@ async function renderCheck(){
  const institutions=S.institutions||[],inst=needInstitution();if(!inst){$('content').innerHTML=noInst();return}
  const ts=await api('/api/templates?institution_id='+inst); const jobs=await api('/api/jobs');
  const defaultTemplate=ts.find(t=>t.active&&t.is_default)?.id||0;
- $('content').innerHTML=sectionIntro('Check Syllabi','Upload one syllabus or an entire folder and inspect compliance findings.')+aiBanner(S.user.ai)+
+ $('content').innerHTML=sectionIntro('Check Syllabi','Upload individual syllabi or ZIP archives of syllabus folders, then inspect compliance findings.')+aiBanner(S.user.ai)+
  `<div class="panel panel-pad"><form id="upload-form" class="stack"><div class="form-row">${selectField('institution_id','Institution',institutions.map(i=>[i.id,i.name]),inst)}${selectField('template_id','Master template',[['0','Institution rules only'],...ts.filter(x=>x.active).map(t=>[t.id,`${t.name} (v${t.version})${t.is_default?' · Default':''}`])],defaultTemplate)}</div>${input('academic_year','Academic year',institutions.find(i=>i.id===inst)?.academic_year||'','text','e.g. 2026-2027; this selects the appropriate catalog reference')}
- <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Select document files"><span class="big-icon">${icon('upload')}</span><h3>Drop your course syllabi here</h3><p>DOCX, PDF, and UTF-8 TXT · Up to 25 MB per file · 100 documents per batch</p><button type="button" id="file-choose" class="btn primary">Browse files</button><input type="file" id="file-upload" multiple accept=".pdf,.docx,.txt" hidden></div><div class="flex justify-between" style="align-items:flex-start"><div id="chosen-files" class="muted tiny">No files selected</div><button class="btn primary" type="submit">${icon('scan')} Run syllabus checks</button></div></form></div>`+
+ <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Select document files"><span class="big-icon">${icon('upload')}</span><h3>Drop your course syllabi here</h3><p>DOCX, PDF, UTF-8 TXT, or ZIP of these files · 25 MB per document · 100 documents / 200 MB expanded per batch</p><button type="button" id="file-choose" class="btn primary">Browse files</button><input type="file" id="file-upload" multiple accept=".pdf,.docx,.txt,.zip" hidden></div><div class="flex justify-between" style="align-items:flex-start"><div id="chosen-files" class="muted tiny">No files selected</div><button class="btn primary" type="submit">${icon('scan')} Run syllabus checks</button></div></form></div>`+
  `<div class="section-bar"><h2>Recent batches</h2></div><div class="panel">${table(['Batch','Institution','Progress','Status',''],jobs.slice(0,25).map(j=>`<tr><td>#${j.id}<br/><small>${prettyDate(j.created_at)}</small></td><td>${esc(j.institution_name)}</td><td>${j.finished} / ${j.total}<div class="progress" style="margin-top:6px"><span style="width:${j.total?j.finished/j.total*100:0}%"></span></div></td><td>${pill(j.status)}</td><td>${aButton('Details','job-view',`data-id="${j.id}"`)}</td></tr>`))}</div>`;
  bindDropzone();
 }
@@ -454,10 +456,10 @@ document.addEventListener('submit',async e=>{
    if(!S.files.length)throw Error('Select at least one syllabus');if(S.files.length>100)throw Error('Limit is 100 files per batch');
    const payload=new FormData();payload.set('institution_id',data.institution_id);payload.set('template_id',data.template_id);payload.set('academic_year',data.academic_year||'');
    for(const f of S.files)payload.append('files',f,f.name);
-   let result=await api('/api/audits/upload',{method:'POST',body:payload});S.files=[];notify(`Batch #${result.job_id} queued successfully`);
+   let result=await api('/api/audits/upload',{method:'POST',body:payload});S.files=[];notify(`Batch #${result.job_id}: ${result.documents_queued} syllabus document(s) queued${result.skipped_count?`; ${result.skipped_count} non-document archive item(s) ignored`:''}`);
    // Preserve the job view as a live, visible modal until all its uploads finish.
    let jobID=result.job_id;
-   modal(modalHead('Audit batch processing')+`<div id="job-progress" class="stack"><p class="muted">Starting...</p></div>`);
+   modal(modalHead('Audit batch processing')+`${result.skipped_count?`<p class="muted tiny">${result.skipped_count} non-document item(s) in ZIP archives were ignored.${result.skipped_entries?.length?`<details><summary>Show ignored files</summary><ul>${result.skipped_entries.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`:''}</p>`:''}<div id="job-progress" class="stack"><p class="muted">Starting...</p></div>`);
    async function updateProgress(){try{let j=await api('/api/jobs/'+jobID),p=j.job.total?Math.floor(j.job.finished/j.job.total*100):0;
       let box=$('job-progress');if(!box){clearInterval(S.poll);return}
       box.innerHTML=`<p>${j.job.finished} / ${j.job.total} processed · ${pill(j.job.status)}</p><div class="progress"><span style="width:${p}%"></span></div><div class="stack">${j.audits.map(a=>`<div class="flex justify-between"><span>${esc(a.filename)}</span>${pill(a.status)}</div>`).join('')}</div>${['complete','complete_with_errors'].includes(j.job.status)?`<div class="form-footer">${aButton('View audits','go-audits','','primary')}${aButton('Batch ZIP','batch-zip',`data-id="${jobID}"`)}</div>`:''}`;

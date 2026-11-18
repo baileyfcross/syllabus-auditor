@@ -26,3 +26,4 @@ __pycache__/
 # Tailwind / Node build dependencies (compiled CSS is committed)
 node_modules/
 npm-debug.log*
+.DS_Store

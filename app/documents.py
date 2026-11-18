@@ -49,9 +49,18 @@ def extract(path):
                     style=(content.style.name if content.style else '')
                     blocks.append({'text':text,'location':f'Paragraph {number}','page':None,'kind':'heading' if style.lower().startswith(('heading','title')) else 'paragraph'})
         for section in doc.sections:
-            for area in [section.header,section.footer]:
+            for area in (section.header,section.footer):
+                # Reading .paragraphs on an undefined header/footer causes
+                # python-docx to CREATE one from its package XML templates.
+                # Skip undefined/linked headers rather than changing a document
+                # just to extract text. A defined header is read at its source
+                # section; subsequent linked sections need not duplicate it.
+                if area.is_linked_to_previous:
+                    continue
                 for p in area.paragraphs:
-                    if p.text.strip(): blocks.append({'text':p.text.strip(),'location':'Header/Footer','page':None,'kind':'paragraph'})
+                    if p.text.strip():
+                        blocks.append({'text':p.text.strip(),'location':'Header/Footer',
+                                       'page':None,'kind':'paragraph'})
     elif suffix=='.pdf':
         with fitz.open(path) as pdf:
             if len(pdf)>250: raise ValueError('PDF exceeds 250-page safety limit')

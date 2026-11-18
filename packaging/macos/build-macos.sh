@@ -147,6 +147,7 @@ PYI=("$PY" -m PyInstaller --noconfirm --clean --onedir --windowed
   --osx-bundle-identifier info.baileyfcross.syllabusauditor
   --collect-all webview
   --collect-all playwright
+  --collect-data docx  # Required XML templates, including default-header.xml
   --collect-submodules app
   --hidden-import app
   --hidden-import app.main
@@ -222,6 +223,15 @@ APP="$DIST/SyllabusAuditor.app"
 [[ -d "$APP" ]] || die "PyInstaller did not produce $APP"
 [[ -x "$APP/Contents/MacOS/SyllabusAuditor" ]] || die "App launcher is missing"
 [[ -f "$APP/Contents/Info.plist" ]] || die "App Info.plist is missing"
+
+# python-docx creates header/footer parts when needed, using bundled XML files.
+# On macOS PyInstaller stores package data under Contents/Resources and links
+# them into Contents/Frameworks. Verify the path python-docx reads at runtime.
+for resource in default-header.xml default-footer.xml default-settings.xml default-styles.xml; do
+  [[ -f "$APP/Contents/Frameworks/docx/templates/$resource" ]] || \
+    die "Missing bundled python-docx resource: $resource. Check --collect-data docx."
+done
+echo 'Verified bundled python-docx XML resources.'
 
 if ((SKIP_AI == 0)); then
   find "$APP/Contents" -name 'Qwen3-1.7B-Q4_K_M.gguf' -type f -print -quit | grep -q . \

@@ -40,6 +40,50 @@ def test_auth_and_institution(client):
     assert client.get('/api/overview').json()['institutions']==1
 
 
+def test_zip_batch_upload_expands_nested_syllabi_and_preserves_atomic_validation(client):
+    """The existing audit endpoint accepts ZIP files, ordinary files, and folders in archives."""
+    import zipfile
+    existing = client.get('/api/institutions').json()
+    if existing:
+        inst = existing[0]['id']
+    else:
+        created = client.post('/api/institutions', json={'name': 'ZIP Test College'})
+        assert created.status_code == 200, created.text
+        inst = created.json()['id']
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, 'w', compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr('CSC/Student One/syllabus.docx', make_doc(['A syllabus from a folder']))
+        z.writestr('CSC/Student Two/notes.txt', b'CSC-220 Foundations of Computation\nCourse policies.')
+        z.writestr('__MACOSX/._syllabus.docx', b'unreadable metadata')
+        z.writestr('roster.csv', b'not a syllabus')
+    response = client.post('/api/audits/upload', data={'institution_id': inst, 'template_id': 0}, files=[
+        ('files', ('class_syllabi.zip', archive_buffer.getvalue(), 'application/zip')),
+        ('files', ('extra.txt', b'CSC-220 Standalone syllabus', 'text/plain')),
+    ])
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['documents_queued'] == 3
+    assert payload['skipped_count'] == 2
+    job = _wait_for_job(client, payload['job_id'])
+    assert job['job']['total'] == 3
+    assert len(job['audits']) == 3
+    assert {a['filename'] for a in job['audits']} == {
+        'CSC - Student One - syllabus.docx', 'CSC - Student Two - notes.txt', 'extra.txt'
+    }
+    assert all(a['status'] == 'complete' for a in job['audits'])
+    before = client.get('/api/jobs').json()
+    unsafe_buffer = io.BytesIO()
+    with zipfile.ZipFile(unsafe_buffer, 'w') as z:
+        z.writestr('valid.txt', b'CSC-220')
+        z.writestr('../bad.txt', b'not allowed')
+    unsafe = client.post('/api/audits/upload', data={'institution_id': inst}, files=[
+        ('files', ('unsafe.zip', unsafe_buffer.getvalue(), 'application/zip'))
+    ])
+    assert unsafe.status_code == 400, unsafe.text
+    assert 'Unsafe ZIP entry' in unsafe.json()['detail']
+    assert client.get('/api/jobs').json() == before
+
+
 def test_approved_domain_trailing_slash_is_normalized(client, monkeypatch):
     """The institution form may receive a trailing slash after a hostname."""
     import socket
@@ -1286,3 +1330,4 @@ def test_syllabus_series_migration_backfills_existing_rerun_chains(tmp_path,monk
     assert database.one('SELECT COUNT(*) n FROM findings WHERE audit_id=101')['n']==1
     database.initialize()
     assert database.one('SELECT series_id FROM audits WHERE id=102')['series_id']==100
+

@@ -128,6 +128,7 @@ $pyinstallerArgs = @(
     '--paths',$project,
     '--collect-all','playwright',
     '--collect-all','webview',
+    '--collect-data','docx', # Include python-docx XML templates, including default-header.xml
     '--collect-submodules','app',
     '--hidden-import','app',
     '--hidden-import','app.main',
@@ -136,6 +137,11 @@ $pyinstallerArgs = @(
 Run-Native $python $pyinstallerArgs
 $exe = Join-Path $project 'dist\SyllabusAuditor\SyllabusAuditor.exe'
 Ensure-File $exe 'EXE did not appear in dist\SyllabusAuditor.'
+# Fail the release build if the python-docx XML templates were not bundled.
+$docxTemplates = Join-Path $project 'dist\SyllabusAuditor\_internal\docx\templates'
+foreach ($resource in @('default-header.xml','default-footer.xml','default-settings.xml','default-styles.xml')) {
+  Ensure-File (Join-Path $docxTemplates $resource) "Missing bundled python-docx resource: $resource. Check --collect-data docx."
+}
 Write-Host "Executable built: $exe" -ForegroundColor Green
 Write-Host 'Smoke test on Windows: launch the native desktop window, verify PDF/report downloads, OCR, MyOCC, AI, and window-close cleanup.'
 if (-not $SkipInstaller) {
